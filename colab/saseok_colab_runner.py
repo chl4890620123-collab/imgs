@@ -32,11 +32,10 @@ WORKFLOW_URL = (
     "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/"
     "refs/heads/main/templates/video_wan2_2_5B_ti2v.json"
 )
-HF_REPO = "Comfy-Org/Wan_2.2_ComfyUI_Repackaged"
 MODEL_FILES = {
-    "diffusion_models": "split_files/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors",
-    "text_encoders": "split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
-    "vae": "split_files/vae/wan2.2_vae.safetensors",
+    "diffusion_models": ("Comfy-Org/Wan_2.2_ComfyUI_Repackaged", "split_files/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors"),
+    "text_encoders": ("Comfy-Org/Wan_2.1_ComfyUI_repackaged", "split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors"),
+    "vae": ("Comfy-Org/Wan_2.2_ComfyUI_Repackaged", "split_files/vae/wan2.2_vae.safetensors"),
 }
 
 def sh(cmd, cwd=None, check=True, capture=False):
@@ -84,13 +83,13 @@ def ensure_comfyui():
 def ensure_models():
     print("\n=== 5/8 Wan 2.2 5B model cache ===")
     from huggingface_hub import hf_hub_download
-    for kind, remote_path in MODEL_FILES.items():
+    for kind, (repo_id, remote_path) in MODEL_FILES.items():
         filename = Path(remote_path).name
         cache_path = MODEL_CACHE / kind / filename
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         if not cache_path.exists():
             print("Downloading once to Google Drive:", filename)
-            downloaded = hf_hub_download(repo_id=HF_REPO, filename=remote_path, local_dir=str(MODEL_CACHE / "_hf"))
+            downloaded = hf_hub_download(repo_id=repo_id, filename=remote_path, local_dir=str(MODEL_CACHE / "_hf"))
             shutil.copy2(downloaded, cache_path)
         target_dir = COMFY_DIR / "models" / kind
         target_dir.mkdir(parents=True, exist_ok=True)
