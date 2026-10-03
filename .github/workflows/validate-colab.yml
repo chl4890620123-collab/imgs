@@ -1,0 +1,49 @@
+name: Validate Saseok Colab
+
+on:
+  push:
+    paths:
+      - "colab/**"
+      - "SASEOK_EP01_WAN22_COLAB.ipynb"
+      - ".github/workflows/validate-colab.yml"
+  pull_request:
+    paths:
+      - "colab/**"
+      - "SASEOK_EP01_WAN22_COLAB.ipynb"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile Python
+        run: python -m py_compile colab/saseok_episode.py colab/saseok_colab_runner.py
+      - name: Validate notebook JSON
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("SASEOK_EP01_WAN22_COLAB.ipynb")
+          nb = json.loads(p.read_text(encoding="utf-8"))
+          assert nb["nbformat"] == 4
+          assert any(c.get("cell_type") == "code" for c in nb["cells"])
+          print("notebook ok")
+          PY
+      - name: Validate episode structure
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "colab")
+          from saseok_episode import EPISODE
+          scenes = EPISODE["scenes"]
+          assert len(scenes) == 15
+          assert sum(s["duration"] for s in scenes) == 1200
+          assert sum(len(s["shots"]) for s in scenes) == 120
+          print("15 scenes / 120 shots / 1200 seconds")
+          PY
