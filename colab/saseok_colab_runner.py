@@ -19,6 +19,7 @@ DRIVE_ROOT = Path("/content/drive/MyDrive/SASEOK_EP01")
 MODEL_CACHE = Path(os.environ.get("SASEOK_MODEL_CACHE", "/content/wan22_model_cache"))
 VENV_DIR = Path("/content/saseok-venv")
 VENV_PY = VENV_DIR / "bin" / "python"
+VENV_VERSION = "3"
 
 WIDTH = int(os.environ.get("SASEOK_WIDTH", "832"))
 HEIGHT = int(os.environ.get("SASEOK_HEIGHT", "480"))
@@ -53,24 +54,30 @@ def install_environment():
     sh(["apt-get", "-qq", "install", "-y", "ffmpeg", "git", "python3.12", "python3.12-venv"])
 
     # Colab's notebook kernel can be newer than the packages used by ComfyUI.
-    # Re-exec the whole renderer inside a clean Python 3.12 venv exactly once.
+    # Recreate the venv when our environment recipe changes, so stale package
+    # files can never survive between retries.
     if os.environ.get("SASEOK_VENV_ACTIVE") != "1":
-        if not VENV_PY.exists():
+        marker = VENV_DIR / ".saseok_venv_version"
+        current = marker.read_text().strip() if marker.exists() else ""
+        if current != VENV_VERSION:
+            if VENV_DIR.exists():
+                shutil.rmtree(VENV_DIR, ignore_errors=True)
             sh(["python3.12", "-m", "venv", str(VENV_DIR)])
-        sh([str(VENV_PY), "-m", "pip", "install", "-q", "--upgrade", "pip", "setuptools", "wheel"])
+            marker.write_text(VENV_VERSION)
+        sh([str(VENV_PY), "-m", "pip", "install", "-q", "--no-cache-dir",
+            "--upgrade", "pip", "setuptools", "wheel"])
         env = os.environ.copy()
         env["SASEOK_VENV_ACTIVE"] = "1"
         print("Re-launching renderer with:", VENV_PY)
         os.execve(str(VENV_PY), [str(VENV_PY), __file__], env)
 
-    # All Python dependencies below are now isolated from the Colab kernel.
-    sh([sys.executable, "-m", "pip", "install", "-q",
+    # All Python dependencies below are isolated from the Colab kernel.
+    sh([sys.executable, "-m", "pip", "install", "-q", "--no-cache-dir",
         "comfy-cli",
         "huggingface_hub>=1.5,<2.0",
         "edge-tts",
         "pydub",
-        "requests",
-        "Pillow==11.3.0"])
+        "requests"])
 
 def mount_drive():
     print("\n=== 2/8 Google Drive mount ===")
@@ -98,15 +105,31 @@ def ensure_comfyui():
         sh(["git", "clone", "--depth", "1", "https://github.com/Comfy-Org/ComfyUI.git", str(COMFY_DIR)])
     else:
         sh(["git", "pull", "--ff-only"], cwd=COMFY_DIR, check=False)
-    sh([sys.executable, "-m", "pip", "install", "-q", "-r", str(COMFY_DIR / "requirements.txt")])
-    # Keep HF ecosystem on a version range compatible with transformers/diffusers.
-    sh([sys.executable, "-m", "pip", "install", "-q", "--upgrade",
-        "huggingface_hub>=1.5,<2.0", "Pillow==11.3.0"])
-    check = sh([sys.executable, "-c",
+    sh([sys.executable, "-m", "pip", "install", "-q", "--no-cache-dir",
+        "-r", str(COMFY_DIR / "requirements.txt")])
+
+    # ComfyUI has an unpinned Pillow dependency. On Colab we have seen mixed
+    # Pillow files survive an upgrade, so remove both package metadata and PIL
+    # module directories before installing one known-good wheel.
+    sh([sys.executable, "-m", "pip", "uninstall", "-y", "Pillow"], check=False)
+    site = sh([sys.executable, "-c",
+        "import site; print(site.getsitepackages()[0])"], capture=True).stdout.strip()
+    if site:
+        site_dir = Path(site)
+        for pat in ("PIL", "Pillow-*", "pillow-*"):
+            for p in site_dir.glob(pat):
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    p.unlink(missing_ok=True)
+    sh([sys.executable, "-m", "pip", "install", "-q", "--no-cache-dir",
+        "Pillow==10.4.0", "huggingface_hub>=1.5,<2.0"])
+
+    # Do not capture stderr here: if this ever fails, the exact import error is
+    # written into saseok_run.log for remote diagnosis.
+    sh([sys.executable, "-c",
         "from PIL import Image, ImageDraw, ImageText; import PIL, huggingface_hub; "
-        "print('Python OK / Pillow', PIL.__version__, '/ huggingface_hub', huggingface_hub.__version__)"],
-        capture=True)
-    print(check.stdout.strip())
+        "print('Python OK / Pillow', PIL.__version__, '/ huggingface_hub', huggingface_hub.__version__)"])
 
 def ensure_models():
     print("\n=== 5/8 Wan 2.2 5B models (ephemeral Colab disk) ===")
