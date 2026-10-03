@@ -104,19 +104,25 @@ def ensure_models():
 def restore_character_assets():
     print("\n=== 6/8 Character references / exact Go board ===")
     from PIL import Image, ImageDraw, ImageOps
-    parts_dir = REPO_DIR / "colab" / "assets" / "characters_b64"
-    parts = sorted(parts_dir.glob("characters_webp.zip.b64.part*"))
-    if not parts:
-        raise FileNotFoundError(f"캐릭터 데이터 조각을 찾지 못했습니다: {parts_dir}")
-    encoded = "".join(p.read_text(encoding="utf-8").strip() for p in parts)
-    zip_path = Path("/content/characters_webp.zip")
-    zip_path.write_bytes(base64.b64decode(encoded))
+    import requests
+
+    # The four character sheets supplied in this project. These URLs are only
+    # used as free reference-asset hosting; no paid video-generation API is called.
+    character_urls = {
+        "ria": os.environ.get("SASEOK_RIA_URL", "https://d2ol7oe51mr4n9.cloudfront.net/user_3K8w3qnBf69HOE6x120lAtgx9I2/028dc793-f7df-491e-a1b1-79170818f443.jpg"),
+        "theo": os.environ.get("SASEOK_THEO_URL", "https://d2ol7oe51mr4n9.cloudfront.net/user_3K8w3qnBf69HOE6x120lAtgx9I2/9fc3f353-0447-4986-a86f-84bd34723ef0.jpg"),
+        "karman": os.environ.get("SASEOK_KARMAN_URL", "https://d2ol7oe51mr4n9.cloudfront.net/user_3K8w3qnBf69HOE6x120lAtgx9I2/67bb030d-14f0-441f-940a-d0d209cf6208.jpg"),
+        "jinwoo": os.environ.get("SASEOK_JINWOO_URL", "https://d2ol7oe51mr4n9.cloudfront.net/user_3K8w3qnBf69HOE6x120lAtgx9I2/f6361669-d210-4669-8350-aab51adaa293.jpg"),
+    }
+
     input_dir = COMFY_DIR / "input" / "saseok"
     input_dir.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(input_dir)
-    for name in ["ria", "theo", "karman", "jinwoo"]:
-        src = input_dir / f"{name}.webp"
+    for name, url in character_urls.items():
+        src = input_dir / f"{name}.jpg"
+        if not src.exists():
+            r = requests.get(url, timeout=120)
+            r.raise_for_status()
+            src.write_bytes(r.content)
         im = Image.open(src).convert("RGB")
         w, h = im.size
         left_sheet = im.crop((0, 0, int(w * 0.64), h))
