@@ -50,7 +50,7 @@ def install_environment():
     sh(["apt-get", "-qq", "update"])
     sh(["apt-get", "-qq", "install", "-y", "ffmpeg", "git"])
     sh([sys.executable, "-m", "pip", "install", "-q", "--upgrade",
-        "comfy-cli", "huggingface_hub", "edge-tts", "pydub", "Pillow", "requests"])
+        "comfy-cli", "huggingface_hub", "edge-tts", "pydub", "requests"])
 
 def mount_drive():
     print("\n=== 2/8 Google Drive mount ===")
@@ -79,6 +79,17 @@ def ensure_comfyui():
     else:
         sh(["git", "pull", "--ff-only"], cwd=COMFY_DIR, check=False)
     sh([sys.executable, "-m", "pip", "install", "-q", "-r", str(COMFY_DIR / "requirements.txt")])
+
+def stabilize_pillow():
+    print("\n=== Pillow compatibility fix ===")
+    # Colab may already have PIL modules loaded while pip replaces Pillow files.
+    # Pin a known-good build only after ComfyUI dependencies are installed.
+    sh([sys.executable, "-m", "pip", "install", "-q", "--force-reinstall",
+        "--no-cache-dir", "Pillow==11.3.0"])
+    check = sh([sys.executable, "-c",
+        "from PIL import Image, ImageDraw, ImageText; import PIL; print('Pillow', PIL.__version__)"],
+        capture=True)
+    print(check.stdout.strip())
 
 def ensure_models():
     print("\n=== 5/8 Wan 2.2 5B models (ephemeral Colab disk) ===")
@@ -400,9 +411,10 @@ def assemble_final(episode, voice_map):
 
 def main():
     install_environment()
-    mount_drive()
     ensure_repo()
     ensure_comfyui()
+    stabilize_pillow()
+    mount_drive()
     ensure_models()
     restore_character_assets()
     proc = start_comfyui()
