@@ -81,9 +81,13 @@ def install_environment():
 
 def mount_drive():
     print("\n=== 2/8 Google Drive mount ===")
-    from google.colab import drive
-    if not Path("/content/drive/MyDrive").exists():
-        drive.mount("/content/drive")
+    # The notebook mounts Drive before launching this isolated Python 3.12
+    # process. google.colab is intentionally not installed inside the venv.
+    drive_root = Path("/content/drive/MyDrive")
+    if not drive_root.exists():
+        raise RuntimeError(
+            "Google Drive가 마운트되지 않았습니다. Colab 노트북의 첫 셀을 다시 실행해 주세요."
+        )
     DRIVE_ROOT.mkdir(parents=True, exist_ok=True)
     (DRIVE_ROOT / "clips").mkdir(exist_ok=True)
     (DRIVE_ROOT / "audio").mkdir(exist_ok=True)
