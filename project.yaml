@@ -1,0 +1,11 @@
+title: "GitHub Video Maker Demo"
+resolution: "1080x1920"
+fps: 30
+voice: "ko-KR-InJoonNeural"
+scenes:
+  - image: "assets/scene1.jpg"
+    text: "안녕하세요. GitHub에서 자동으로 제작하는 영상입니다."
+    duration: 5
+  - image: "assets/scene2.jpg"
+    text: "이미지와 대본을 올리면 음성, 자막, 화면 움직임을 합쳐 MP4로 만듭니다."
+    duration: 7
