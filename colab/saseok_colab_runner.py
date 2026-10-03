@@ -19,7 +19,7 @@ DRIVE_ROOT = Path("/content/drive/MyDrive/SASEOK_EP01")
 MODEL_CACHE = Path(os.environ.get("SASEOK_MODEL_CACHE", "/content/wan22_model_cache"))
 VENV_DIR = Path("/content/saseok-venv")
 VENV_PY = VENV_DIR / "bin" / "python"
-VENV_VERSION = "3"
+VENV_VERSION = "4"
 
 WIDTH = int(os.environ.get("SASEOK_WIDTH", "832"))
 HEIGHT = int(os.environ.get("SASEOK_HEIGHT", "480"))
@@ -123,12 +123,11 @@ def ensure_comfyui():
                 else:
                     p.unlink(missing_ok=True)
     sh([sys.executable, "-m", "pip", "install", "-q", "--no-cache-dir",
-        "Pillow==10.4.0", "huggingface_hub>=1.5,<2.0"])
+        "Pillow==12.3.0", "huggingface_hub>=1.5,<2.0"])
 
-    # Do not capture stderr here: if this ever fails, the exact import error is
-    # written into saseok_run.log for remote diagnosis.
+    # Validate only Pillow modules that SASEOK actually uses.
     sh([sys.executable, "-c",
-        "from PIL import Image, ImageDraw, ImageText; import PIL, huggingface_hub; "
+        "from PIL import Image, ImageDraw, ImageOps; import PIL, huggingface_hub; "
         "print('Python OK / Pillow', PIL.__version__, '/ huggingface_hub', huggingface_hub.__version__)"])
 
 def ensure_models():
