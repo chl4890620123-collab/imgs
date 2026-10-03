@@ -16,15 +16,15 @@ REPO_URL = "https://github.com/chl4890620123-collab/imgs.git"
 REPO_DIR = Path("/content/imgs")
 COMFY_DIR = Path("/content/ComfyUI")
 DRIVE_ROOT = Path("/content/drive/MyDrive/SASEOK_EP01")
-MODEL_CACHE = Path("/content/drive/MyDrive/AI_MODELS/WAN22_COMFY")
+MODEL_CACHE = Path(os.environ.get("SASEOK_MODEL_CACHE", "/content/wan22_model_cache"))
 
-WIDTH = int(os.environ.get("SASEOK_WIDTH", "1280"))
-HEIGHT = int(os.environ.get("SASEOK_HEIGHT", "704"))
+WIDTH = int(os.environ.get("SASEOK_WIDTH", "832"))
+HEIGHT = int(os.environ.get("SASEOK_HEIGHT", "480"))
 FPS = int(os.environ.get("SASEOK_FPS", "24"))
 FRAMES = int(os.environ.get("SASEOK_FRAMES", "121"))
 STEPS = int(os.environ.get("SASEOK_STEPS", "20"))
 CFG = float(os.environ.get("SASEOK_CFG", "5"))
-MAX_SHOTS_PER_RUN = int(os.environ.get("SASEOK_MAX_SHOTS", "4"))
+MAX_SHOTS_PER_RUN = int(os.environ.get("SASEOK_MAX_SHOTS", "999"))
 SCENE_START = int(os.environ.get("SASEOK_SCENE_START", "1"))
 SCENE_END = int(os.environ.get("SASEOK_SCENE_END", "15"))
 
@@ -81,22 +81,24 @@ def ensure_comfyui():
     sh([sys.executable, "-m", "pip", "install", "-q", "-r", str(COMFY_DIR / "requirements.txt")])
 
 def ensure_models():
-    print("\n=== 5/8 Wan 2.2 5B model cache ===")
+    print("\n=== 5/8 Wan 2.2 5B models (ephemeral Colab disk) ===")
     from huggingface_hub import hf_hub_download
+    MODEL_CACHE.mkdir(parents=True, exist_ok=True)
     for kind, (repo_id, remote_path) in MODEL_FILES.items():
         filename = Path(remote_path).name
-        cache_path = MODEL_CACHE / kind / filename
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        if not cache_path.exists():
-            print("Downloading once to Google Drive:", filename)
-            downloaded = hf_hub_download(repo_id=repo_id, filename=remote_path, local_dir=str(MODEL_CACHE / "_hf"))
-            shutil.copy2(downloaded, cache_path)
+        repo_cache = MODEL_CACHE / repo_id.replace("/", "__")
+        repo_cache.mkdir(parents=True, exist_ok=True)
+        downloaded = Path(hf_hub_download(
+            repo_id=repo_id,
+            filename=remote_path,
+            local_dir=str(repo_cache),
+        ))
         target_dir = COMFY_DIR / "models" / kind
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / filename
         if target.exists() or target.is_symlink():
             target.unlink()
-        target.symlink_to(cache_path)
+        target.symlink_to(downloaded)
         print("Model ready:", target)
 
 def restore_character_assets():
@@ -362,8 +364,23 @@ def assemble_final(episode, voice_map):
         if not audio.exists():
             generate_scene_audio(scene, voice_map, audio)
         base = concatenate_scene_motion(scene)
-        sh(["ffmpeg", "-y", "-stream_loop", "-1", "-i", str(base), "-i", str(audio),
-            "-t", str(scene["duration"]), "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(base)],
+            check=True, text=True, capture_output=True
+        )
+        base_duration = max(0.1, float(probe.stdout.strip()))
+        stretch = float(scene["duration"]) / base_duration
+        # Do not repeat the same 8-shot sequence. Time-stretch its real Wan motion
+        # to the scripted scene duration, then upscale the final edit to 720p.
+        vf = (
+            f"setpts={stretch:.8f}*PTS,"
+            "scale=1280:720:force_original_aspect_ratio=decrease,"
+            "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p"
+        )
+        sh(["ffmpeg", "-y", "-i", str(base), "-i", str(audio),
+            "-vf", vf, "-t", str(scene["duration"]),
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
             "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest",
             "-movflags", "+faststart", str(out_scene)])
         scene_outputs.append(out_scene)
