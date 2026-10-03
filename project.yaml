@@ -1,11 +1,11 @@
-title: "GitHub Video Maker Demo"
+title: "바둑 전쟁 - 반전"
 resolution: "1080x1920"
 fps: 30
 voice: "ko-KR-InJoonNeural"
 scenes:
-  - image: "assets/scene1.jpg"
-    text: "안녕하세요. GitHub에서 자동으로 제작하는 영상입니다."
-    duration: 5
-  - image: "assets/scene2.jpg"
-    text: "이미지와 대본을 올리면 음성, 자막, 화면 움직임을 합쳐 MP4로 만듭니다."
+  - image: "assets/scene1.svg"
+    text: "모두가 그 승부는 이미 끝났다고 생각했다. 하지만 그는 바둑판에서 눈을 떼지 않았다."
     duration: 7
+  - image: "assets/scene2.svg"
+    text: "상대가 승리를 확신한 순간, 마지막 한 수가 놓였다. 그 한 수는 공격이 아니었다. 처음부터 준비해 둔 함정이었다."
+    duration: 9
