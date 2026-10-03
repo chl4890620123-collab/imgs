@@ -17,6 +17,8 @@ REPO_DIR = Path("/content/imgs")
 COMFY_DIR = Path("/content/ComfyUI")
 DRIVE_ROOT = Path("/content/drive/MyDrive/SASEOK_EP01")
 MODEL_CACHE = Path(os.environ.get("SASEOK_MODEL_CACHE", "/content/wan22_model_cache"))
+VENV_DIR = Path("/content/saseok-venv")
+VENV_PY = VENV_DIR / "bin" / "python"
 
 WIDTH = int(os.environ.get("SASEOK_WIDTH", "832"))
 HEIGHT = int(os.environ.get("SASEOK_HEIGHT", "480"))
@@ -43,14 +45,32 @@ def sh(cmd, cwd=None, check=True, capture=False):
     return subprocess.run(list(map(str, cmd)), cwd=cwd, check=check, text=True, capture_output=capture)
 
 def install_environment():
-    print("\n=== 1/8 Colab GPU / dependencies ===")
+    print("\n=== 1/8 Colab GPU / isolated Python environment ===")
     if shutil.which("nvidia-smi") is None:
         raise RuntimeError("GPU 런타임이 아닙니다. Colab 메뉴에서 런타임 > 런타임 유형 변경 > GPU를 선택한 뒤 다시 실행하세요.")
     sh(["nvidia-smi"], check=False)
     sh(["apt-get", "-qq", "update"])
-    sh(["apt-get", "-qq", "install", "-y", "ffmpeg", "git"])
-    sh([sys.executable, "-m", "pip", "install", "-q", "--upgrade",
-        "comfy-cli", "huggingface_hub", "edge-tts", "pydub", "requests"])
+    sh(["apt-get", "-qq", "install", "-y", "ffmpeg", "git", "python3.12", "python3.12-venv"])
+
+    # Colab's notebook kernel can be newer than the packages used by ComfyUI.
+    # Re-exec the whole renderer inside a clean Python 3.12 venv exactly once.
+    if os.environ.get("SASEOK_VENV_ACTIVE") != "1":
+        if not VENV_PY.exists():
+            sh(["python3.12", "-m", "venv", str(VENV_DIR)])
+        sh([str(VENV_PY), "-m", "pip", "install", "-q", "--upgrade", "pip", "setuptools", "wheel"])
+        env = os.environ.copy()
+        env["SASEOK_VENV_ACTIVE"] = "1"
+        print("Re-launching renderer with:", VENV_PY)
+        os.execve(str(VENV_PY), [str(VENV_PY), __file__], env)
+
+    # All Python dependencies below are now isolated from the Colab kernel.
+    sh([sys.executable, "-m", "pip", "install", "-q",
+        "comfy-cli",
+        "huggingface_hub>=1.5,<2.0",
+        "edge-tts",
+        "pydub",
+        "requests",
+        "Pillow==11.3.0"])
 
 def mount_drive():
     print("\n=== 2/8 Google Drive mount ===")
@@ -79,15 +99,12 @@ def ensure_comfyui():
     else:
         sh(["git", "pull", "--ff-only"], cwd=COMFY_DIR, check=False)
     sh([sys.executable, "-m", "pip", "install", "-q", "-r", str(COMFY_DIR / "requirements.txt")])
-
-def stabilize_pillow():
-    print("\n=== Pillow compatibility fix ===")
-    # Colab may already have PIL modules loaded while pip replaces Pillow files.
-    # Pin a known-good build only after ComfyUI dependencies are installed.
-    sh([sys.executable, "-m", "pip", "install", "-q", "--force-reinstall",
-        "--no-cache-dir", "Pillow==11.3.0"])
+    # Keep HF ecosystem on a version range compatible with transformers/diffusers.
+    sh([sys.executable, "-m", "pip", "install", "-q", "--upgrade",
+        "huggingface_hub>=1.5,<2.0", "Pillow==11.3.0"])
     check = sh([sys.executable, "-c",
-        "from PIL import Image, ImageDraw, ImageText; import PIL; print('Pillow', PIL.__version__)"],
+        "from PIL import Image, ImageDraw, ImageText; import PIL, huggingface_hub; "
+        "print('Python OK / Pillow', PIL.__version__, '/ huggingface_hub', huggingface_hub.__version__)"],
         capture=True)
     print(check.stdout.strip())
 
@@ -413,7 +430,6 @@ def main():
     install_environment()
     ensure_repo()
     ensure_comfyui()
-    stabilize_pillow()
     mount_drive()
     ensure_models()
     restore_character_assets()
