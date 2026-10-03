@@ -33,7 +33,7 @@ SCENE_END = int(os.environ.get("SASEOK_SCENE_END", "15"))
 
 WORKFLOW_URL = (
     "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/"
-    "refs/heads/main/templates/video_wan2_2_5B_ti2v.json"
+    "0e5c5efb32ba6f3365d6da07da64aaf668157042/templates/video_wan2_2_5B_ti2v.json"
 )
 MODEL_FILES = {
     "diffusion_models": ("Comfy-Org/Wan_2.2_ComfyUI_Repackaged", "split_files/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors"),
@@ -129,10 +129,12 @@ def ensure_comfyui():
     sh([sys.executable, "-m", "pip", "install", "-q", "--no-cache-dir",
         "Pillow==12.3.0", "huggingface_hub>=1.5,<2.0"])
 
-    # Validate only Pillow modules that SASEOK actually uses.
+    # Validate the actual runtime stack before downloading large models.
     sh([sys.executable, "-c",
-        "from PIL import Image, ImageDraw, ImageOps; import PIL, huggingface_hub; "
-        "print('Python OK / Pillow', PIL.__version__, '/ huggingface_hub', huggingface_hub.__version__)"])
+        "from PIL import Image, ImageDraw, ImageOps; import PIL, huggingface_hub, torch; "
+        "print('Python OK / Pillow', PIL.__version__, '/ huggingface_hub', huggingface_hub.__version__, "
+        "'/ torch', torch.__version__, '/ cuda', torch.cuda.is_available(), "
+        "'/ gpu', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE')"])
 
 def ensure_models():
     print("\n=== 5/8 Wan 2.2 5B models (ephemeral Colab disk) ===")
@@ -233,8 +235,12 @@ def start_comfyui():
     import requests
     print("\n=== 7/8 Start ComfyUI ===")
     log = open("/content/comfyui.log", "w", buffering=1)
-    proc = subprocess.Popen([sys.executable, "main.py", "--listen", "127.0.0.1", "--port", "8188", "--lowvram"],
-                            cwd=COMFY_DIR, stdout=log, stderr=subprocess.STDOUT)
+    env = os.environ.copy()
+    env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    proc = subprocess.Popen(
+        [sys.executable, "main.py", "--listen", "127.0.0.1", "--port", "8188", "--lowvram"],
+        cwd=COMFY_DIR, stdout=log, stderr=subprocess.STDOUT, env=env
+    )
     url = "http://127.0.0.1:8188/object_info"
     for _ in range(180):
         if proc.poll() is not None:
@@ -348,7 +354,10 @@ def render_pending_shots():
             wf_path = tmp_wf_dir / f"scene_{sid:02d}_shot_{shot_idx:02d}.json"
             wf_path.write_text(json.dumps(wf, ensure_ascii=False), encoding="utf-8")
             before = time.time()
-            result = sh(["comfy", "run", "--workflow", str(wf_path), "--wait", "--where", "local"],
+            comfy_cli = Path(sys.executable).parent / "comfy"
+            if not comfy_cli.exists():
+                raise FileNotFoundError(f"comfy-cli 실행 파일을 찾지 못했습니다: {comfy_cli}")
+            result = sh([str(comfy_cli), "run", "--workflow", str(wf_path), "--wait", "--where", "local"],
                         cwd=COMFY_DIR, check=False, capture=True)
             if result.returncode != 0:
                 print(result.stdout[-3000:] if result.stdout else "")
