@@ -17,6 +17,7 @@ from performance import build_shot_prompt, performance_plan_text
 from quality_review import mark_shot_quality, regeneration_plan
 from ltx_runner import available as ltx_available, build_job, run_job
 from remote_jobs import RemoteQueue, default_queue_root
+from performance_report import report_text as colab_performance_report
 
 
 mcp = MCPServer(
@@ -266,6 +267,76 @@ def submit_colab_shot(shot_id: str) -> dict:
 
 
 @mcp.tool()
+def submit_colab_scene(scene_id: int) -> dict:
+    """Queue only the highest-value shots for a scene, limited by its call budget."""
+    path, project, recipes = _load()
+    recipe = recipes.get(scene_id)
+    if recipe.inference.backend != "ltx-2b":
+        raise ValueError("현재 Colab 워커는 ltx-2b 백엔드만 직접 실행합니다.")
+    queue = _remote_queue(path)
+    jobs = queue.submit_scene_priority(project, scene_id, recipe, path.parent)
+    for job in jobs:
+        project.shot(job["shot_id"]).generation_status = "queued"
+    project.save(path)
+    return {
+        "scene_id": scene_id,
+        "queued": len(jobs),
+        "jobs": [{"job_id": x["job_id"], "shot_id": x["shot_id"]} for x in jobs],
+    }
+
+
+@mcp.tool()
+def submit_colab_regeneration(scene_id: int, threshold: float = 72.0) -> dict:
+    """Queue only low-quality shots identified by the selective regeneration plan."""
+    path, project, recipes = _load()
+    recipe = recipes.get(scene_id)
+    queue = _remote_queue(path)
+    plan = regeneration_plan(project, scene_id, recipe, threshold)
+    jobs = []
+    for item in plan:
+        shot = project.shot(item.shot_id)
+        latest = queue.latest_job_for_shot(shot.id)
+        if latest and latest.get("status") in {"queued", "running"}:
+            continue
+        job = queue.submit_shot(project, shot, recipe, path.parent)
+        shot.generation_status = "queued"
+        jobs.append({
+            "job_id": job["job_id"],
+            "shot_id": shot.id,
+            "reason": item.reason,
+        })
+    project.save(path)
+    return {"scene_id": scene_id, "queued": len(jobs), "jobs": jobs}
+
+
+@mcp.tool()
+def recover_stale_colab_jobs(timeout_seconds: int = 300) -> dict:
+    """Recover jobs abandoned by a disconnected Colab runtime."""
+    path, _, _ = _load()
+    recovered = _remote_queue(path).recover_stale_running(timeout_seconds)
+    return {
+        "count": len(recovered),
+        "jobs": [
+            {
+                "job_id": x["job_id"],
+                "shot_id": x["shot_id"],
+                "status": x["status"],
+                "retry_count": (x.get("retry") or {}).get("count", 0),
+            }
+            for x in recovered
+        ],
+    }
+
+
+@mcp.tool()
+def get_colab_performance_report() -> str:
+    """Summarize generation time, frame speed, VRAM and GPU utilization from completed jobs."""
+    path, _, _ = _load()
+    queue = _remote_queue(path)
+    return colab_performance_report(queue.list_jobs(["done", "failed"]))
+
+
+@mcp.tool()
 def get_colab_jobs(limit: int = 20) -> dict:
     """Return recent Colab GPU jobs and current worker heartbeat state."""
     path, _, _ = _load()
@@ -295,6 +366,7 @@ def sync_colab_results() -> dict:
     """Copy completed Colab videos into media/generated and attach them to their shots."""
     path, project, _ = _load()
     queue = _remote_queue(path)
+    queue.recover_stale_running(300)
     synced = queue.sync_all_done(project, path)
     return {
         "count": len(synced),
