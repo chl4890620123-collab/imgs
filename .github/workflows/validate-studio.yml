@@ -1,0 +1,26 @@
+name: Validate Saseok Studio
+
+on:
+  push:
+    paths:
+      - "studio/**"
+      - ".github/workflows/validate-studio.yml"
+  pull_request:
+    paths:
+      - "studio/**"
+      - ".github/workflows/validate-studio.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile studio
+        run: python -m py_compile studio/*.py
+      - name: Core tests
+        env:
+          PYTHONPATH: studio
+        run: python studio/test_core.py
