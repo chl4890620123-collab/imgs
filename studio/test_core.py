@@ -168,6 +168,34 @@ def test_ltx_frame_count():
     assert frames_for_duration(20.0, 60) <= 257
 
 
+
+
+def test_old_project_migrates_scene_shots():
+    p = StudioProject(
+        title="old",
+        scenes=[
+            Scene(
+                9,
+                "이세계",
+                0,
+                8,
+                shot_prompts=[
+                    "ria_fullbody: Ria runs through rain",
+                    "Jin-woo looks up",
+                ],
+            )
+        ],
+    )
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "old.json"
+        p.save(path)
+        loaded = StudioProject.load(path)
+        assert len(loaded.shots) == 2
+        assert loaded.shots[0].reference_key == "ria_fullbody"
+        assert loaded.shots[1].reference_key is None
+        assert loaded.shots[0].duration == 4
+
+
 def test_dialogue_audit():
     p = StudioProject(
         title="x",
@@ -191,4 +219,5 @@ if __name__ == "__main__":
     test_performance_timeline_and_shot_prompt()
     test_selective_regeneration()
     test_ltx_frame_count()
+    test_old_project_migrates_scene_shots()
     print("ok")
