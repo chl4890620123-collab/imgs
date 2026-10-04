@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from project import DialogueLine, Scene, StudioProject, VoiceProfile
+from project import DialogueLine, Scene, Shot, StudioProject, VoiceProfile
 from render import render
 
 
@@ -19,6 +19,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         audio = root / "actor.wav"
+        shot_video = root / "shot.mp4"
         subprocess.run(
             [
                 ffmpeg, "-y",
@@ -32,6 +33,19 @@ def main() -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        subprocess.run(
+            [
+                ffmpeg, "-y",
+                "-f", "lavfi",
+                "-i", "color=c=navy:s=640x360:r=24:d=2",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                str(shot_video),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
         project = StudioProject(
             title="render-smoke",
@@ -40,6 +54,17 @@ def main() -> None:
             height=360,
             characters={"테스트": VoiceProfile(mode="external")},
             scenes=[Scene(id=1, title="검증", start=0.0, duration=2.0)],
+            shots=[
+                Shot(
+                    id="S01_SH01",
+                    scene_id=1,
+                    start=0.0,
+                    duration=2.0,
+                    prompt="shot-level render integration",
+                    visual="shot.mp4",
+                    generation_status="ready",
+                )
+            ],
             dialogue=[
                 DialogueLine(
                     id="L0001",
