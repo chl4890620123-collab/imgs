@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "saseok-studio": {
+      "command": "python",
+      "args": [
+        "C:\\path\\to\\imgs\\studio\\mcp_server.py"
+      ],
+      "env": {
+        "SASEOK_PROJECT": "C:\\path\\to\\imgs\\saseok_studio_project.json"
+      }
+    }
+  }
+}
