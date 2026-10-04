@@ -5,6 +5,8 @@ from project import DialogueLine, Scene, StudioProject, VoiceProfile
 from render import write_srt
 from video_recipe import VideoRecipe, RecipeStore, apply_preset, estimate_calls
 from prompt_engine import plan_instruction, apply_plan
+from inference import available_backends, recommended_for_vram
+from dialogue_audit import audit_dialogue
 
 
 def test_voice_switching():
@@ -75,9 +77,32 @@ def test_director_prompt_plan_and_apply():
         assert p.characters["서진우"].mode == "external"
 
 
+def test_korean_free_stack_excludes_hunyuan():
+    keys = {x.key for x in available_backends("KR")}
+    assert "hunyuan15" not in keys
+    assert {"ltx-2b", "wan22", "framepack"} <= keys
+    low_vram = {x.key for x in recommended_for_vram(15, "KR")}
+    assert "ltx-2b" in low_vram
+    assert "wan22" not in low_vram
+
+
+def test_dialogue_audit():
+    p = StudioProject(
+        title="x",
+        scenes=[Scene(1, "a", 0, 70), Scene(2, "b", 70, 60)],
+        dialogue=[DialogueLine("L1", 1, "A", "안녕", 1, 2)],
+    )
+    result = audit_dialogue(p)
+    assert result.total_lines == 1
+    assert result.silent_scenes == (2,)
+    assert set(result.sparse_scenes) == {1, 2}
+
+
 if __name__ == "__main__":
     test_voice_switching()
     test_roundtrip_and_srt()
     test_video_recipe_cache_key_ignores_local_post()
     test_director_prompt_plan_and_apply()
+    test_korean_free_stack_excludes_hunyuan()
+    test_dialogue_audit()
     print("ok")
