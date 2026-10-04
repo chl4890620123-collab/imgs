@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from project import DialogueLine, Scene, StudioProject
+from project import DialogueLine, Scene, Shot, StudioProject
 
 
 def build(repo_root: Path, out_file: Path) -> Path:
@@ -26,6 +26,20 @@ def build(repo_root: Path, out_file: Path) -> Path:
             ],
         )
         project.scenes.append(scene)
+
+        src_shots = src_scene.get("shots", [])
+        if src_shots:
+            shot_duration = scene.duration / len(src_shots)
+            for shot_index, (reference_key, prompt) in enumerate(src_shots, 1):
+                project.shots.append(Shot(
+                    id=f"S{scene.id:02d}_SH{shot_index:02d}",
+                    scene_id=scene.id,
+                    start=scene.start + shot_duration * (shot_index - 1),
+                    duration=shot_duration,
+                    prompt=prompt,
+                    reference_key=None if reference_key == "none" else reference_key,
+                ))
+
         dialogue = src_scene.get("dialogue", [])
         if dialogue:
             gap = scene.duration / (len(dialogue) + 1)
