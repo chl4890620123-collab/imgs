@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QProcess
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
     QCheckBox, QDoubleSpinBox, QGroupBox, QLineEdit, QMainWindow, QMessageBox,
@@ -19,6 +19,8 @@ from generation_plan import build_plan, plan_text
 from video_recipe import PRESETS, RecipeStore, apply_preset
 from prompt_engine import apply_plan, plan_instruction
 from inference import available_backends
+from performance import performance_plan_text
+from ltx_runner import available as ltx_available, build_job, finalize_job
 
 
 class StudioWindow(QMainWindow):
@@ -143,7 +145,11 @@ class StudioWindow(QMainWindow):
         for scene in self.project.scenes:
             self.video_scene.addItem(f"{scene.id:02d}. {scene.title}", scene.id)
         self.video_scene.currentIndexChanged.connect(self.load_video_recipe)
+        self.video_scene.currentIndexChanged.connect(self.refresh_shot_combo)
         video_layout.addRow("장면", self.video_scene)
+
+        self.video_shot = QComboBox()
+        video_layout.addRow("컷", self.video_shot)
 
         self.video_preset = QComboBox()
         for key in ("high", "fast", "cinematic"):
@@ -228,8 +234,18 @@ class StudioWindow(QMainWindow):
         video_buttons.addWidget(show_plan)
         video_layout.addRow(video_buttons)
 
+        motion_buttons = QHBoxLayout()
+        performance = QPushButton("연기 타임라인 보기")
+        performance.clicked.connect(self.show_performance_plan)
+        motion_buttons.addWidget(performance)
+        self.generate_shot_button = QPushButton("선택 컷 LTX 생성")
+        self.generate_shot_button.clicked.connect(self.generate_selected_shot)
+        motion_buttons.addWidget(self.generate_shot_button)
+        video_layout.addRow(motion_buttons)
+
         right.addWidget(video_box)
         if self.video_scene.count():
+            self.refresh_shot_combo()
             self.load_video_recipe()
 
         right.addStretch(1)
@@ -381,6 +397,95 @@ class StudioWindow(QMainWindow):
     def _current_scene_id(self) -> int:
         value = self.video_scene.currentData()
         return int(value) if value is not None else 1
+
+    def refresh_shot_combo(self):
+        self.video_shot.clear()
+        for shot in self.project.scene_shots(self._current_scene_id()):
+            status = "✓" if shot.visual else "·"
+            self.video_shot.addItem(
+                f"{status} {shot.id}  {shot.start:.1f}-{shot.start + shot.duration:.1f}s",
+                shot.id,
+            )
+
+    def _current_shot(self):
+        shot_id = self.video_shot.currentData()
+        if not shot_id:
+            return None
+        try:
+            return self.project.shot(str(shot_id))
+        except KeyError:
+            return None
+
+    def show_performance_plan(self):
+        self.save_video_recipe()
+        recipe = self.recipe_store.get(self._current_scene_id())
+        text = performance_plan_text(self.project, self._current_scene_id(), recipe)
+        QMessageBox.information(self, "연기 / 행동 타임라인", text or "계획이 없습니다.")
+
+    def generate_selected_shot(self):
+        shot = self._current_shot()
+        if shot is None:
+            return QMessageBox.information(self, "컷 선택", "생성할 컷을 먼저 선택하세요.")
+        self.save_video_recipe()
+        recipe = self.recipe_store.get(shot.scene_id)
+        if recipe.inference.backend != "ltx-2b":
+            return QMessageBox.information(
+                self, "LTX 생성", "현재 직접 실행 연결은 LTX-Video 2B 백엔드에 연결되어 있습니다."
+            )
+        ok, detail = ltx_available()
+        if not ok:
+            return QMessageBox.information(
+                self,
+                "LTX 실행 준비 필요",
+                detail + "\n\nLTX-Video를 설치한 뒤 LTX_VIDEO_HOME 환경변수를 저장소 경로로 설정하세요.",
+            )
+        try:
+            job = build_job(self.project, shot, recipe, self.project_dir)
+        except Exception as e:
+            return QMessageBox.critical(self, "LTX 작업 생성 실패", str(e))
+
+        shot.generation_status = "generating"
+        self.project.save(self.project_path)
+        self._active_ltx_job = job
+        self._active_ltx_shot_id = shot.id
+
+        self.ltx_process = QProcess(self)
+        self.ltx_process.setWorkingDirectory(str(Path(detail)))
+        self.ltx_process.finished.connect(self._on_ltx_finished)
+        self.ltx_process.errorOccurred.connect(
+            lambda _err: QMessageBox.critical(
+                self, "LTX 실행 오류", self.ltx_process.errorString()
+            )
+        )
+        self.generate_shot_button.setEnabled(False)
+        self.generate_shot_button.setText("LTX 생성 중…")
+        self.ltx_process.start(job.command[0], list(job.command[1:]))
+
+    def _on_ltx_finished(self, exit_code, _exit_status):
+        self.generate_shot_button.setEnabled(True)
+        self.generate_shot_button.setText("선택 컷 LTX 생성")
+        shot = self.project.shot(self._active_ltx_shot_id)
+        if exit_code != 0:
+            shot.generation_status = "failed"
+            self.project.save(self.project_path)
+            return QMessageBox.critical(
+                self,
+                "LTX 생성 실패",
+                self.ltx_process.readAllStandardError().data().decode("utf-8", errors="replace")[-4000:],
+            )
+        try:
+            out = finalize_job(self._active_ltx_job)
+            shot.visual = str(out.relative_to(self.project_dir)).replace("\\", "/")
+            shot.generation_status = "ready"
+            shot.quality_score = None
+            shot.quality_flags = []
+            self.project.save(self.project_path)
+            self.refresh_shot_combo()
+            QMessageBox.information(self, "LTX 생성 완료", f"{shot.id}\n{out}")
+        except Exception as e:
+            shot.generation_status = "failed"
+            self.project.save(self.project_path)
+            QMessageBox.critical(self, "결과 처리 실패", str(e))
 
     def load_video_recipe(self):
         recipe = self.recipe_store.get(self._current_scene_id())
