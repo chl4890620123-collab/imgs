@@ -18,6 +18,7 @@ from render import render
 from generation_plan import build_plan, plan_text
 from video_recipe import PRESETS, RecipeStore, apply_preset
 from prompt_engine import apply_plan, plan_instruction
+from inference import available_backends
 
 
 class StudioWindow(QMainWindow):
@@ -160,7 +161,7 @@ class StudioWindow(QMainWindow):
         advanced = QFormLayout(self.advanced_video)
 
         self.video_backend = QComboBox()
-        self.video_backend.addItems(["ltx-2b", "hunyuan15", "wan22", "framepack"])
+        self.video_backend.addItems([x.key for x in available_backends("KR")])
         advanced.addRow("추론 엔진", self.video_backend)
 
         self.video_width = QSpinBox()
