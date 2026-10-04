@@ -76,42 +76,62 @@ def render(project: StudioProject, project_dir: Path, out_file: Path) -> Path:
     write_srt(project, srt, project_dir)
 
     total = max((s.start + s.duration for s in project.scenes), default=1.0)
-    scene_files: list[Path] = []
-    for scene in project.scenes:
-        out = work / f"scene_{scene.id:02d}.mp4"
-        visual = (project_dir / scene.visual) if scene.visual else None
+    timeline_files: list[Path] = []
+    if project.shots:
+        units = sorted(project.shots, key=lambda x: x.start)
+    else:
+        units = sorted(project.scenes, key=lambda x: x.start)
+
+    for unit in units:
+        is_shot = hasattr(unit, "scene_id")
+        label = unit.id if is_shot else f"scene_{unit.id:02d}"
+        out = work / f"{label}.mp4"
+
+        visual_value = unit.visual
+        if is_shot and not visual_value:
+            parent = next((x for x in project.scenes if x.id == unit.scene_id), None)
+            visual_value = parent.visual if parent else None
+        visual = (project_dir / visual_value) if visual_value else None
+        duration = float(unit.duration)
+
         if visual and visual.exists() and visual.suffix.lower() in {".mp4", ".mov", ".mkv", ".webm"}:
             cmd = [
-                ffmpeg(), "-y", "-i", str(visual), "-t", str(scene.duration),
+                ffmpeg(), "-y", "-i", str(visual), "-t", str(duration),
                 "-vf", (
                     f"scale={project.width}:{project.height}:force_original_aspect_ratio=decrease,"
                     f"pad={project.width}:{project.height}:(ow-iw)/2:(oh-ih)/2,"
-                    f"tpad=stop_mode=clone:stop_duration={scene.duration},fps={project.fps}"
+                    f"tpad=stop_mode=clone:stop_duration={duration},fps={project.fps}"
                 ),
                 "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out),
             ]
         elif visual and visual.exists():
             cmd = [
-                ffmpeg(), "-y", "-loop", "1", "-i", str(visual), "-t", str(scene.duration),
-                "-vf", f"scale={project.width}:{project.height}:force_original_aspect_ratio=decrease,pad={project.width}:{project.height}:(ow-iw)/2:(oh-ih)/2,fps={project.fps}",
+                ffmpeg(), "-y", "-loop", "1", "-i", str(visual), "-t", str(duration),
+                "-vf", (
+                    f"scale={project.width}:{project.height}:force_original_aspect_ratio=decrease,"
+                    f"pad={project.width}:{project.height}:(ow-iw)/2:(oh-ih)/2,fps={project.fps}"
+                ),
                 "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out),
             ]
         else:
             cmd = [
                 ffmpeg(), "-y", "-f", "lavfi", "-i",
-                f"color=c=black:s={project.width}x{project.height}:r={project.fps}:d={scene.duration}",
+                f"color=c=black:s={project.width}x{project.height}:r={project.fps}:d={duration}",
                 "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out),
             ]
         subprocess.run(cmd, check=True)
-        scene_files.append(out)
+        timeline_files.append(out)
 
-    concat = work / "scenes.txt"
-    concat.write_text("\n".join(f"file '{p.as_posix()}'" for p in scene_files), encoding="utf-8")
+    concat = work / "timeline.txt"
+    concat.write_text("\n".join(f"file '{p.as_posix()}'" for p in timeline_files), encoding="utf-8")
     video = work / "video.mp4"
-    subprocess.run([ffmpeg(), "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(video)], check=True)
+    subprocess.run(
+        [ffmpeg(), "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(video)],
+        check=True,
+    )
 
     active = []
     for line in project.dialogue:

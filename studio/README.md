@@ -176,3 +176,50 @@ Colab 무료 GPU는 종류/시간/사용량이 보장되지 않으므로 장시�
 `studio/dialogue_audit.py`는 전체 길이 대비 대사 수와 무대사/대사 희박 장면을 검사합니다.
 영상의 대화량을 무작정 늘리기보다, 캐릭터가 필요한 순간에만 말하고 각 인물의 말투가 겹치지 않도록
 검수하는 용도입니다.
+
+
+## 연기 중심 Shot 파이프라인
+
+Saseok Studio는 이제 장면 전체를 하나의 영상으로 늘려 쓰지 않고 **Shot 단위**로 관리합니다.
+기존 15개 장면 / 120개 쇼트 정의는 프로젝트를 처음 만들 때 실제 `Shot` 타임라인으로 변환됩니다.
+이전 버전 프로젝트도 열면 장면의 `shot_prompts`를 기준으로 자동 마이그레이션합니다.
+
+대사는 자막 타이밍만 쓰지 않습니다. `studio/performance.py`가 각 대사에 대해:
+
+- 말하기 전 시선/호흡/몸 준비
+- 실제 발화와 입 움직임
+- 말이 끝난 뒤 표정과 몸의 잔동작
+- 다음 화자의 무언 반응
+
+을 시간축 이벤트로 만듭니다. 이 이벤트와 캐릭터 바이블, 쇼트 행동, 감독 프롬프트,
+카메라 지시를 합쳐 쇼트별 LTX 프롬프트를 190단어 이내로 구성합니다.
+
+호출 수를 줄이기 위해 장면의 모든 쇼트를 무조건 다시 생성하지 않습니다.
+`AI 호출 예산/장면`만큼 대사와 중요한 행동이 겹치는 쇼트를 우선 선택하고,
+완료된 쇼트에는 품질 점수와 오류 플래그를 저장해 **얼굴 드리프트/신체 오류/립싱크/연속성 문제**가 있는 쇼트만 재생성할 수 있습니다.
+
+### LTX 직접 실행
+
+Studio의 **선택 컷 LTX 생성** 버튼은 로컬 LTX-Video 설치와 직접 연결됩니다.
+
+Windows PowerShell 예:
+
+```powershell
+$env:LTX_VIDEO_HOME="C:\\AI\\LTX-Video"
+$env:LTX_PYTHON="C:\\AI\\LTX-Video\\env\\Scripts\\python.exe"
+python studio/app.py
+```
+
+`LTX_PYTHON`을 생략하면 Studio가 실행 중인 Python을 사용합니다.
+GPU가 없거나 LTX 설치가 확인되지 않으면 생성 버튼은 이유를 안내하고 실행하지 않습니다.
+
+생성 완료 파일은 `media/generated/<SHOT_ID>.mp4`에 저장되고 해당 Shot의 `visual`로 자동 연결됩니다.
+최종 렌더는 Shot별 영상을 순서대로 이어 붙이므로 6초 영상을 90초 장면 전체에 늘여 쓰지 않습니다.
+
+### MCP 추가 도구
+
+- `get_scene_performance_plan`: 대사/시선/반응/행동 타임라인 확인
+- `get_shot_generation_prompt`: 실제 LTX에 전달되는 쇼트 프롬프트 확인
+- `set_shot_quality`: 품질 점수와 오류 플래그 기록
+- `get_regeneration_plan`: 재생성이 필요한 쇼트만 반환
+- `run_ltx_shot`: CUDA와 LTX가 준비된 머신에서 한 쇼트 실제 생성
