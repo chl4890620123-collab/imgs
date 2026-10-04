@@ -60,24 +60,50 @@ class DriveWorker:
         ]:
             path.mkdir(parents=True, exist_ok=True)
 
-    def gpu_name(self) -> str:
+    def gpu_snapshot(self) -> dict:
         try:
             result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                [
+                    "nvidia-smi",
+                    "--query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu",
+                    "--format=csv,noheader,nounits",
+                ],
                 check=True,
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
-            return result.stdout.strip().splitlines()[0] or "CUDA GPU"
+            row = result.stdout.strip().splitlines()[0]
+            name, total, used, util, temp = [x.strip() for x in row.split(",", 4)]
+            return {
+                "gpu_name": name or "CUDA GPU",
+                "memory_total_mb": float(total),
+                "memory_used_mb": float(used),
+                "gpu_utilization": float(util),
+                "temperature_c": float(temp),
+            }
         except Exception:
-            return "unknown"
+            return {
+                "gpu_name": "unknown",
+                "memory_total_mb": None,
+                "memory_used_mb": None,
+                "gpu_utilization": None,
+                "temperature_c": None,
+            }
+
+    def gpu_name(self) -> str:
+        return str(self.gpu_snapshot().get("gpu_name") or "unknown")
 
     def write_heartbeat(self, status: str, job_id: str | None = None) -> None:
+        snapshot = self.gpu_snapshot()
         atomic_json(self.heartbeat, {
             "worker_id": self.worker_id,
             "status": status,
-            "gpu": self.gpu_name(),
+            "gpu": snapshot["gpu_name"],
+            "memory_total_mb": snapshot["memory_total_mb"],
+            "memory_used_mb": snapshot["memory_used_mb"],
+            "gpu_utilization": snapshot["gpu_utilization"],
+            "temperature_c": snapshot["temperature_c"],
             "current_job": job_id,
             "updated_at": utc_now(),
         })
@@ -188,6 +214,12 @@ class DriveWorker:
                 log.write("\n=== " + utc_now() + " ===\n")
                 log.write(" ".join(cmd[:2]) + " [arguments hidden in UI]\n")
                 log.flush()
+                started = time.perf_counter()
+                frame_count = frames_for_duration(
+                    job["input"]["duration_sec"],
+                    job["input"]["fps"],
+                )
+                gpu_samples: list[dict] = []
                 process = subprocess.Popen(
                     cmd,
                     cwd=self.ltx_home,
@@ -198,16 +230,30 @@ class DriveWorker:
                 while process.poll() is None:
                     time.sleep(3)
                     current = read_json(path)
+                    snapshot = self.gpu_snapshot()
+                    gpu_samples.append(snapshot)
                     if current.get("cancel_requested"):
                         process.terminate()
                         try:
                             process.wait(timeout=12)
                         except subprocess.TimeoutExpired:
                             process.kill()
-                        self.finish(path, "cancelled", stage="cancelled_during_generation")
+                        elapsed = max(0.001, time.perf_counter() - started)
+                        self.finish(
+                            path,
+                            "cancelled",
+                            stage="cancelled_during_generation",
+                            metrics=self._metrics(gpu_samples, elapsed, frame_count),
+                        )
                         return
                     self.update(path, stage="generate", progress=55)
                     self.write_heartbeat("generating", job_id)
+
+                elapsed = max(0.001, time.perf_counter() - started)
+                if not gpu_samples:
+                    gpu_samples.append(self.gpu_snapshot())
+                metrics = self._metrics(gpu_samples, elapsed, frame_count)
+                self.update(path, metrics=metrics)
 
                 if process.returncode != 0:
                     raise RuntimeError(f"LTX 종료 코드 {process.returncode}")
@@ -223,6 +269,10 @@ class DriveWorker:
             result = self.root / job["output"]["result_file"]
             result.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(clips[-1], result)
+            current = read_json(path)
+            metrics = dict(current.get("metrics") or {})
+            metrics["output_bytes"] = result.stat().st_size
+            metrics["output_megabytes"] = round(result.stat().st_size / 1024 / 1024, 3)
             self.finish(
                 path,
                 "done",
@@ -230,7 +280,46 @@ class DriveWorker:
                 progress=100,
                 finished_at=utc_now(),
                 error=None,
+                metrics=metrics,
             )
+
+    @staticmethod
+    def _metrics(samples: list[dict], elapsed: float, frame_count: int) -> dict:
+        used = [
+            float(x["memory_used_mb"])
+            for x in samples
+            if x.get("memory_used_mb") is not None
+        ]
+        util = [
+            float(x["gpu_utilization"])
+            for x in samples
+            if x.get("gpu_utilization") is not None
+        ]
+        temps = [
+            float(x["temperature_c"])
+            for x in samples
+            if x.get("temperature_c") is not None
+        ]
+        total = next(
+            (float(x["memory_total_mb"]) for x in samples if x.get("memory_total_mb") is not None),
+            None,
+        )
+        gpu_name = next(
+            (str(x["gpu_name"]) for x in samples if x.get("gpu_name") not in {None, "unknown"}),
+            "unknown",
+        )
+        return {
+            "gpu_name": gpu_name,
+            "gpu_memory_total_mb": total,
+            "peak_vram_mb": max(used) if used else None,
+            "avg_gpu_utilization": sum(util) / len(util) if util else None,
+            "peak_temperature_c": max(temps) if temps else None,
+            "elapsed_sec": elapsed,
+            "frames": int(frame_count),
+            "sec_per_frame": elapsed / frame_count if frame_count else None,
+            "generated_frames_per_sec": frame_count / elapsed if elapsed else None,
+            "sample_count": len(samples),
+        }
 
     def finish(self, path: Path, state: str, **changes) -> None:
         job = read_json(path)
