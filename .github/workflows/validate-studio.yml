@@ -24,3 +24,7 @@ jobs:
         env:
           PYTHONPATH: studio
         run: python studio/test_core.py
+      - name: MCP server import smoke test
+        run: |
+          python -m pip install "mcp>=2,<3"
+          PYTHONPATH=studio python -c "import mcp_server; print(mcp_server.mcp.name)"
