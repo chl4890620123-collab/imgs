@@ -19,6 +19,11 @@ def build(repo_root: Path, out_file: Path) -> Path:
             title=src_scene["title"],
             start=cursor,
             duration=float(src_scene["duration"]),
+            description=src_scene.get("base"),
+            shot_prompts=[
+                f"{ref}: {prompt}" if ref != "none" else prompt
+                for ref, prompt in src_scene.get("shots", [])
+            ],
         )
         project.scenes.append(scene)
         dialogue = src_scene.get("dialogue", [])
