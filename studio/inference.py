@@ -20,7 +20,7 @@ BACKENDS = [
         "ltx-2b", "LTX-Video 2B Distilled", "기본/미리보기", 12,
         "빠른 I2V, 키프레임, 영상 연장, 반복 생성에 유리",
         "13B/최신 LTX-2 계열보다 절대 화질은 낮을 수 있음",
-        "Apache-2.0",
+        "LTXV Open Weights License 0.X (code: Apache-2.0)",
     ),
     VideoBackend(
         "hunyuan15", "HunyuanVideo-1.5 Step-Distilled", "품질 컷", 14,
@@ -38,8 +38,9 @@ BACKENDS = [
     VideoBackend(
         "framepack", "FramePack F1/P1", "긴 장면/연장", 6,
         "긴 영상에서 컨텍스트 비용을 일정하게 유지, 진행 중 프레임 확인 가능",
-        "공식적으로 RTX 30/40/50 계열 중심이며 Tesla T4는 검증 대상이 아님",
-        "Apache-2.0",
+        "코드는 Apache-2.0이나 공식 구현이 HunyuanVideo 가중치에 의존하며 해당 가중치 라이선스는 대한민국을 제외",
+        "Apache-2.0 code + Tencent Hunyuan model license",
+        False,
     ),
 ]
 
