@@ -89,7 +89,31 @@ class StudioProject:
         raw["scenes"] = [Scene(**x) for x in raw.get("scenes", [])]
         raw["shots"] = [Shot(**x) for x in raw.get("shots", [])]
         raw["dialogue"] = [DialogueLine(**x) for x in raw.get("dialogue", [])]
-        return cls(**raw)
+        project = cls(**raw)
+
+        # Migrate v0.1 projects that stored only scene-level shot prompt strings.
+        if not project.shots:
+            for scene in project.scenes:
+                prompts = list(scene.shot_prompts)
+                if not prompts:
+                    continue
+                duration = scene.duration / len(prompts)
+                for index, raw_prompt in enumerate(prompts, 1):
+                    reference_key = None
+                    prompt = raw_prompt
+                    if ": " in raw_prompt:
+                        prefix, rest = raw_prompt.split(": ", 1)
+                        if prefix.replace("_", "").isalnum():
+                            reference_key, prompt = prefix, rest
+                    project.shots.append(Shot(
+                        id=f"S{scene.id:02d}_SH{index:02d}",
+                        scene_id=scene.id,
+                        start=scene.start + duration * (index - 1),
+                        duration=duration,
+                        prompt=prompt,
+                        reference_key=reference_key,
+                    ))
+        return project
 
     def save(self, path: str | Path) -> None:
         data = asdict(self)
