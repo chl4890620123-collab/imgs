@@ -17,6 +17,7 @@ from project import StudioProject
 from render import render
 from generation_plan import build_plan, plan_text
 from video_recipe import PRESETS, RecipeStore, apply_preset
+from prompt_engine import apply_plan, plan_instruction
 
 
 class StudioWindow(QMainWindow):
@@ -113,6 +114,26 @@ class StudioWindow(QMainWindow):
             b = QPushButton(label)
             b.clicked.connect(lambda _=False, m=mode: self._set_character_mode(m))
             right.addWidget(b)
+
+        prompt_box = QGroupBox("감독 프롬프트")
+        prompt_layout = QVBoxLayout(prompt_box)
+        self.director_prompt = QTextEdit()
+        self.director_prompt.setPlaceholderText(
+            "예: 장면 9에서 리아가 더 빠르게 진우를 밀치고, 카메라는 낮은 각도로 따라가. "
+            "캐릭터 일관성 90, 선명도 75, 1080p. 서진우는 친구 녹음으로."
+        )
+        self.director_prompt.setMaximumHeight(110)
+        prompt_layout.addWidget(self.director_prompt)
+
+        prompt_buttons = QHBoxLayout()
+        preview_prompt = QPushButton("변경 미리보기")
+        preview_prompt.clicked.connect(self.preview_director_prompt)
+        prompt_buttons.addWidget(preview_prompt)
+        apply_prompt = QPushButton("프롬프트 적용")
+        apply_prompt.clicked.connect(self.apply_director_prompt)
+        prompt_buttons.addWidget(apply_prompt)
+        prompt_layout.addLayout(prompt_buttons)
+        right.addWidget(prompt_box)
 
         video_box = QGroupBox("영상 생성 — 쉬운 모드")
         video_layout = QFormLayout(video_box)
@@ -330,6 +351,31 @@ class StudioWindow(QMainWindow):
         line = self.selected_line()
         if line and line.character != self.character.currentText():
             self.character.setCurrentText(line.character)
+
+    def preview_director_prompt(self):
+        text = self.director_prompt.toPlainText().strip()
+        if not text:
+            return QMessageBox.information(self, "감독 프롬프트", "지시 내용을 입력하세요.")
+        plan = plan_instruction(text, self.project, current_scene_id=self._current_scene_id())
+        QMessageBox.information(
+            self,
+            "변경 미리보기",
+            plan.text() + "\n\n원문 지시는 장면 생성 프롬프트에 그대로 보존됩니다.",
+        )
+
+    def apply_director_prompt(self):
+        text = self.director_prompt.toPlainText().strip()
+        if not text:
+            return QMessageBox.information(self, "감독 프롬프트", "지시 내용을 입력하세요.")
+        plan = plan_instruction(text, self.project, current_scene_id=self._current_scene_id())
+        changed = apply_plan(plan, self.project, self.project_path, self.recipe_store)
+        self.refresh_table()
+        self.load_video_recipe()
+        QMessageBox.information(
+            self,
+            "프롬프트 적용 완료",
+            ("\n".join(changed) if changed else "장면 생성 지시를 저장했습니다."),
+        )
 
     def _current_scene_id(self) -> int:
         value = self.video_scene.currentData()
