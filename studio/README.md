@@ -38,10 +38,10 @@ python studio/app.py saseok_studio_project.json
 
 생성형 영상은 편집기와 분리된 플러그인 구조로 붙입니다.
 
-1. **LTX-Video 2B Distilled** — 빠른 미리보기와 I2V 기본 백엔드
-2. **HunyuanVideo-1.5 Step-Distilled** — 중요한 인물/전투 컷 품질 백엔드
-3. **Wan 2.2 TI2V-5B** — 24GB+ GPU에서 최종 시네마틱 컷
-4. **FramePack** — 긴 장면/영상 연장용 선택 백엔드
+1. **LTX-Video 2B Distilled** — 한국 빌드의 기본/고화질/시네마틱 백엔드 후보
+2. **Wan 2.2 TI2V-5B** — 24GB+ GPU에서 최종 고품질 컷 후보
+
+HunyuanVideo 계열과 HunyuanVideo 가중치에 의존하는 FramePack은 대한민국에서 해당 모델 라이선스 적용 범위 문제 때문에 한국 빌드의 실행 선택지에서 제외합니다.
 
 20분 전체를 생성형 모델로 매번 다시 만들지 않고, 편집기는 즉시 작업하고 필요한 컷만 생성 후 교체하는 방식이 목표입니다.
 
