@@ -129,7 +129,7 @@ def build_shot_prompt(
         bible = get_character_bible(name)
         if bible:
             compact_characters.append(
-                f"{name}: {bible.visual_anchor}; movement {bible.action_style}; {bible.emotional_rule}"
+                f"{name}: {bible.role}; {bible.visual_anchor}; movement {bible.action_style}; {bible.emotional_rule}"
             )
 
     event_text = " ".join(x.instruction for x in events)
