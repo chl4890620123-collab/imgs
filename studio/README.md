@@ -157,10 +157,10 @@ MCP 클라이언트에서는 `studio/mcp.example.json`의 command/args를 실제
 
 Saseok Studio 자체 편집/렌더 파이프라인은 로컬 실행을 우선합니다.
 
-- **LTX-Video**: Apache-2.0. 한국 프로젝트의 기본 영상 생성 후보.
-- **Wan 2.2**: Apache-2.0. 충분한 VRAM이 있을 때 고품질 컷 후보.
-- **FramePack**: Apache-2.0. 긴 영상/프레임 진행형 생성 후보. 공식 문서상 RTX 30/40/50 계열 중심으로 테스트됨.
-- **HunyuanVideo-1.5**: Tencent Hunyuan Community License가 대한민국을 적용 지역에서 제외하므로 한국 빌드의 선택 목록에서 제외.
+- **LTX-Video 0.9.8 weights**: 코드 저장소는 Apache-2.0이지만 모델 가중치는 **LTXV Open Weights License 0.X**. 연매출 1천만 달러 미만 개인/소규모 프로젝트는 로열티 없는 사용 범위가 있으나 사용 제한 조항을 따라야 함. 한국 프로젝트의 기본 영상 생성 후보.
+- **Wan 2.2**: 모델이 Apache-2.0. 충분한 VRAM이 있을 때 고품질 컷 후보.
+- **FramePack**: 코드 자체는 Apache-2.0이지만 공식 구현이 Tencent HunyuanVideo 모델 구성요소를 사용함. HunyuanVideo 모델 라이선스가 대한민국을 적용 지역에서 제외하므로 한국 빌드에서는 제외.
+- **HunyuanVideo / HunyuanVideo-1.5**: Tencent Hunyuan Community License가 대한민국을 적용 지역에서 제외하므로 한국 빌드의 선택 목록에서 제외.
 - **Gemini 3.8 Flash-Lite TTS**: 현재 API 무료 등급이 있으나 무료 한도/정책은 서비스 제공자가 바꿀 수 있음.
 - **FFmpeg / PySide6 / MCP SDK**: 로컬 소프트웨어 구성요소. 배포 시 각 라이선스 의무는 별도 확인.
 
