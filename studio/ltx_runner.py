@@ -102,17 +102,18 @@ def build_job(
     )
 
 
-def run_job(job: LTXJob, cwd: str | Path | None = None) -> Path:
-    before = {p.resolve() for p in job.output_dir.glob("*.mp4")}
-    subprocess.run(list(job.command), cwd=cwd, check=True)
+def finalize_job(job: LTXJob) -> Path:
     candidates = sorted(
-        [p for p in job.output_dir.glob("*.mp4") if p.resolve() not in before],
+        job.output_dir.glob("*.mp4"),
         key=lambda p: p.stat().st_mtime_ns,
     )
-    if not candidates:
-        candidates = sorted(job.output_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime_ns)
     if not candidates:
         raise RuntimeError("LTX가 완료됐지만 출력 MP4를 찾지 못했습니다.")
     job.target_file.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(candidates[-1], job.target_file)
     return job.target_file
+
+
+def run_job(job: LTXJob, cwd: str | Path | None = None) -> Path:
+    subprocess.run(list(job.command), cwd=cwd, check=True)
+    return finalize_job(job)
