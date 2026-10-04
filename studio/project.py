@@ -58,6 +58,20 @@ class Scene:
 
 
 @dataclass
+class Shot:
+    id: str
+    scene_id: int
+    start: float
+    duration: float
+    prompt: str
+    reference_key: Optional[str] = None
+    visual: Optional[str] = None
+    generation_status: str = "pending"  # pending | queued | generating | ready | failed
+    quality_score: Optional[float] = None
+    quality_flags: list[str] = field(default_factory=list)
+
+
+@dataclass
 class StudioProject:
     title: str
     fps: int = 24
@@ -65,6 +79,7 @@ class StudioProject:
     height: int = 720
     characters: dict[str, VoiceProfile] = field(default_factory=dict)
     scenes: list[Scene] = field(default_factory=list)
+    shots: list[Shot] = field(default_factory=list)
     dialogue: list[DialogueLine] = field(default_factory=list)
 
     @classmethod
@@ -72,6 +87,7 @@ class StudioProject:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
         raw["characters"] = {k: VoiceProfile(**v) for k, v in raw.get("characters", {}).items()}
         raw["scenes"] = [Scene(**x) for x in raw.get("scenes", [])]
+        raw["shots"] = [Shot(**x) for x in raw.get("shots", [])]
         raw["dialogue"] = [DialogueLine(**x) for x in raw.get("dialogue", [])]
         return cls(**raw)
 
@@ -83,6 +99,18 @@ class StudioProject:
         if character not in self.characters:
             self.characters[character] = VoiceProfile()
         return self.characters[character]
+
+    def scene_shots(self, scene_id: int) -> list[Shot]:
+        return sorted(
+            [x for x in self.shots if x.scene_id == scene_id],
+            key=lambda x: x.start,
+        )
+
+    def shot(self, shot_id: str) -> Shot:
+        found = next((x for x in self.shots if x.id == shot_id), None)
+        if found is None:
+            raise KeyError(shot_id)
+        return found
 
     def line_audio(self, line: DialogueLine) -> Optional[str]:
         profile = self.profile(line.character)
