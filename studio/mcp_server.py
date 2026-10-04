@@ -11,6 +11,8 @@ from generation_plan import build_plan, plan_text
 from project import StudioProject
 from prompt_engine import apply_plan, plan_instruction
 from video_recipe import RecipeStore, apply_preset
+from scene_prompt import build_scene_generation_prompt
+from dialogue_audit import audit_text
 
 
 mcp = MCPServer(
@@ -147,6 +149,20 @@ def set_voice_mode(character: str, mode: str) -> dict:
     project.profile(character).mode = mode
     project.save(path)
     return {"character": character, "mode": mode}
+
+
+@mcp.tool()
+def get_scene_generation_prompt(scene_id: int) -> str:
+    """Return the final character-aware, dialogue-aware prompt that a video backend should receive."""
+    _, project, recipes = _load()
+    return build_scene_generation_prompt(project, scene_id, recipes.get(scene_id))
+
+
+@mcp.tool()
+def get_dialogue_audit() -> str:
+    """Audit dialogue density and flag silent or unusually sparse long scenes."""
+    _, project, _ = _load()
+    return audit_text(project)
 
 
 @mcp.tool()

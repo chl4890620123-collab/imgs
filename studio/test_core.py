@@ -7,6 +7,7 @@ from video_recipe import VideoRecipe, RecipeStore, apply_preset, estimate_calls
 from prompt_engine import plan_instruction, apply_plan
 from inference import available_backends, recommended_for_vram
 from dialogue_audit import audit_dialogue
+from scene_prompt import build_scene_generation_prompt
 
 
 def test_voice_switching():
@@ -85,6 +86,34 @@ def test_korean_free_stack_excludes_hunyuan():
     low_vram = {x.key for x in recommended_for_vram(15, "KR")}
     assert "ltx-2b" in low_vram
     assert "wan22" not in low_vram
+    cinematic = apply_preset(VideoRecipe(scene_id=1), "cinematic")
+    assert cinematic.inference.backend == "ltx-2b"
+
+
+def test_scene_prompt_uses_character_dialogue_and_action():
+    p = StudioProject(
+        title="x",
+        characters={"서진우": VoiceProfile(), "리아": VoiceProfile()},
+        scenes=[
+            Scene(
+                9, "이세계", 0, 10,
+                description="rainy battlefield",
+                shot_prompts=["Ria runs toward Jin-woo", "Ria tackles Jin-woo before an arrow lands"],
+            )
+        ],
+        dialogue=[
+            DialogueLine("L1", 9, "리아", "엎드려!", 1, 2),
+            DialogueLine("L2", 9, "서진우", "여긴…….", 2, 3),
+        ],
+    )
+    recipe = apply_preset(VideoRecipe(scene_id=9), "high")
+    recipe.inference.creative_prompt = "리아가 실제로 진우를 밀치며 둘의 위치가 바뀐다."
+    prompt = build_scene_generation_prompt(p, 9, recipe)
+    assert "frontline commander" in prompt
+    assert "professional Go player" in prompt
+    assert "엎드려!" in prompt
+    assert "Ria tackles Jin-woo" in prompt
+    assert "No subtitles" in prompt
 
 
 def test_dialogue_audit():
@@ -106,4 +135,5 @@ if __name__ == "__main__":
     test_director_prompt_plan_and_apply()
     test_korean_free_stack_excludes_hunyuan()
     test_dialogue_audit()
+    test_scene_prompt_uses_character_dialogue_and_action()
     print("ok")

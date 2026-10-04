@@ -53,6 +53,8 @@ class Scene:
     start: float
     duration: float
     visual: Optional[str] = None
+    description: Optional[str] = None
+    shot_prompts: list[str] = field(default_factory=list)
 
 
 @dataclass
