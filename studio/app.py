@@ -6,14 +6,17 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
-    QLineEdit, QMainWindow, QMessageBox, QPushButton, QSlider, QTableWidget,
-    QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+    QCheckBox, QDoubleSpinBox, QGroupBox, QLineEdit, QMainWindow, QMessageBox,
+    QPushButton, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QTextEdit,
+    QVBoxLayout, QWidget,
 )
 
 from audio import prepare_recording
 from gemini_tts import GeminiTTS
 from project import StudioProject
 from render import render
+from generation_plan import build_plan, plan_text
+from video_recipe import PRESETS, RecipeStore, apply_preset
 
 
 class StudioWindow(QMainWindow):
@@ -22,6 +25,7 @@ class StudioWindow(QMainWindow):
         self.project_path = project_path
         self.project_dir = project_path.parent
         self.project = StudioProject.load(project_path)
+        self.recipe_store = RecipeStore(self.project_dir / "saseok_video_recipes.json")
         self.setWindowTitle("Saseok Studio — 사석 제작 편집기")
         self.resize(1450, 850)
         self._build_ui()
@@ -109,6 +113,102 @@ class StudioWindow(QMainWindow):
             b = QPushButton(label)
             b.clicked.connect(lambda _=False, m=mode: self._set_character_mode(m))
             right.addWidget(b)
+
+        video_box = QGroupBox("영상 생성 — 쉬운 모드")
+        video_layout = QFormLayout(video_box)
+
+        self.video_scene = QComboBox()
+        for scene in self.project.scenes:
+            self.video_scene.addItem(f"{scene.id:02d}. {scene.title}", scene.id)
+        self.video_scene.currentIndexChanged.connect(self.load_video_recipe)
+        video_layout.addRow("장면", self.video_scene)
+
+        self.video_preset = QComboBox()
+        for key in ("high", "fast", "cinematic"):
+            self.video_preset.addItem(PRESETS[key]["label"], key)
+        self.video_preset.currentIndexChanged.connect(self.apply_video_preset)
+        video_layout.addRow("품질", self.video_preset)
+
+        self.call_budget = QSpinBox()
+        self.call_budget.setRange(1, 6)
+        video_layout.addRow("AI 호출 예산/장면", self.call_budget)
+
+        self.advanced_video = QGroupBox("고급 설정")
+        self.advanced_video.setCheckable(True)
+        self.advanced_video.setChecked(False)
+        advanced = QFormLayout(self.advanced_video)
+
+        self.video_backend = QComboBox()
+        self.video_backend.addItems(["ltx-2b", "hunyuan15", "wan22", "framepack"])
+        advanced.addRow("추론 엔진", self.video_backend)
+
+        self.video_width = QSpinBox()
+        self.video_width.setRange(320, 1920)
+        self.video_width.setSingleStep(32)
+        self.video_height = QSpinBox()
+        self.video_height.setRange(192, 1080)
+        self.video_height.setSingleStep(8)
+        size_row = QHBoxLayout()
+        size_row.addWidget(self.video_width)
+        size_row.addWidget(QLabel("×"))
+        size_row.addWidget(self.video_height)
+        advanced.addRow("생성 해상도", size_row)
+
+        self.video_duration = QDoubleSpinBox()
+        self.video_duration.setRange(2.0, 20.0)
+        self.video_duration.setSingleStep(0.5)
+        self.video_duration.setSuffix("초")
+        advanced.addRow("한 번 생성 길이", self.video_duration)
+
+        self.video_steps = QSpinBox()
+        self.video_steps.setRange(4, 50)
+        advanced.addRow("추론 Steps", self.video_steps)
+
+        self.video_guidance = QDoubleSpinBox()
+        self.video_guidance.setRange(1.0, 12.0)
+        self.video_guidance.setSingleStep(0.1)
+        advanced.addRow("Guidance", self.video_guidance)
+
+        self.video_seed = QSpinBox()
+        self.video_seed.setRange(0, 2147483647)
+        advanced.addRow("Seed", self.video_seed)
+
+        self.motion_strength = QSlider(Qt.Horizontal)
+        self.motion_strength.setRange(0, 100)
+        advanced.addRow("동작 강도", self.motion_strength)
+
+        self.character_lock = QSlider(Qt.Horizontal)
+        self.character_lock.setRange(0, 100)
+        advanced.addRow("캐릭터 일관성", self.character_lock)
+
+        self.camera_prompt = QLineEdit()
+        advanced.addRow("카메라 지시", self.camera_prompt)
+
+        self.video_negative = QTextEdit()
+        self.video_negative.setMaximumHeight(70)
+        advanced.addRow("네거티브", self.video_negative)
+
+        self.post_upscale = QCheckBox("로컬 업스케일")
+        self.post_interpolation = QCheckBox("프레임 보간")
+        post_row = QHBoxLayout()
+        post_row.addWidget(self.post_upscale)
+        post_row.addWidget(self.post_interpolation)
+        advanced.addRow("후처리", post_row)
+
+        video_layout.addRow(self.advanced_video)
+
+        video_buttons = QHBoxLayout()
+        save_video = QPushButton("영상 설정 저장")
+        save_video.clicked.connect(self.save_video_recipe)
+        video_buttons.addWidget(save_video)
+        show_plan = QPushButton("호출 계획 보기")
+        show_plan.clicked.connect(self.show_generation_plan)
+        video_buttons.addWidget(show_plan)
+        video_layout.addRow(video_buttons)
+
+        right.addWidget(video_box)
+        if self.video_scene.count():
+            self.load_video_recipe()
 
         right.addStretch(1)
         export = QPushButton("현재 프로젝트 MP4 렌더")
@@ -230,6 +330,66 @@ class StudioWindow(QMainWindow):
         line = self.selected_line()
         if line and line.character != self.character.currentText():
             self.character.setCurrentText(line.character)
+
+    def _current_scene_id(self) -> int:
+        value = self.video_scene.currentData()
+        return int(value) if value is not None else 1
+
+    def load_video_recipe(self):
+        recipe = self.recipe_store.get(self._current_scene_id())
+        idx = self.video_preset.findData(recipe.preset)
+        if idx >= 0:
+            self.video_preset.blockSignals(True)
+            self.video_preset.setCurrentIndex(idx)
+            self.video_preset.blockSignals(False)
+        self.call_budget.setValue(recipe.call_budget)
+        inf = recipe.inference
+        self.video_backend.setCurrentText(inf.backend)
+        self.video_width.setValue(inf.width)
+        self.video_height.setValue(inf.height)
+        self.video_duration.setValue(inf.duration_sec)
+        self.video_steps.setValue(inf.steps)
+        self.video_guidance.setValue(inf.guidance)
+        self.video_seed.setValue(inf.seed)
+        self.motion_strength.setValue(inf.motion_strength)
+        self.character_lock.setValue(inf.character_lock)
+        self.camera_prompt.setText(inf.camera_prompt)
+        self.video_negative.setPlainText(inf.negative_prompt)
+        self.post_upscale.setChecked(recipe.post.upscale)
+        self.post_interpolation.setChecked(recipe.post.interpolation)
+
+    def apply_video_preset(self):
+        key = self.video_preset.currentData()
+        if not key:
+            return
+        recipe = self.recipe_store.get(self._current_scene_id())
+        apply_preset(recipe, str(key))
+        self.load_video_recipe()
+
+    def save_video_recipe(self):
+        recipe = self.recipe_store.get(self._current_scene_id())
+        recipe.preset = str(self.video_preset.currentData() or "high")
+        recipe.call_budget = self.call_budget.value()
+        inf = recipe.inference
+        inf.backend = self.video_backend.currentText()
+        inf.width = self.video_width.value()
+        inf.height = self.video_height.value()
+        inf.duration_sec = self.video_duration.value()
+        inf.steps = self.video_steps.value()
+        inf.guidance = self.video_guidance.value()
+        inf.seed = self.video_seed.value()
+        inf.motion_strength = self.motion_strength.value()
+        inf.character_lock = self.character_lock.value()
+        inf.camera_prompt = self.camera_prompt.text().strip()
+        inf.negative_prompt = self.video_negative.toPlainText().strip()
+        recipe.post.upscale = self.post_upscale.isChecked()
+        recipe.post.interpolation = self.post_interpolation.isChecked()
+        self.recipe_store.save()
+
+    def show_generation_plan(self):
+        self.save_video_recipe()
+        plan = build_plan(self.project, self.project_dir, self.recipe_store)
+        QMessageBox.information(self, "AI 영상 호출 계획", plan_text(plan))
 
     def export_video(self):
         out, _ = QFileDialog.getSaveFileName(
