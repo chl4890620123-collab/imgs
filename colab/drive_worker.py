@@ -34,6 +34,15 @@ def frames_for_duration(duration_sec: float, fps: int) -> int:
     return n * 8 + 1
 
 
+def parse_time(value: str | None) -> float:
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
+
+
 class DriveWorker:
     def __init__(
         self,
@@ -107,6 +116,62 @@ class DriveWorker:
             "current_job": job_id,
             "updated_at": utc_now(),
         })
+
+    def recover_stale_jobs(self, timeout_seconds: float = 300.0) -> int:
+        """Requeue abandoned running jobs after a Colab runtime disconnects."""
+        timeout_seconds = max(60.0, float(timeout_seconds))
+        recovered = 0
+        now = time.time()
+        for path in list(self.running.glob("*.json")):
+            try:
+                job = read_json(path)
+            except Exception:
+                continue
+            age = now - parse_time(job.get("updated_at"))
+            if age < timeout_seconds:
+                continue
+
+            worker_id = str(job.get("worker_id") or "")
+            heartbeat = (
+                self.root / "workers" / "heartbeat" / f"{worker_id}.json"
+                if worker_id else None
+            )
+            if heartbeat and heartbeat.exists():
+                try:
+                    hb = read_json(heartbeat)
+                    if now - parse_time(hb.get("updated_at")) < 90.0:
+                        continue
+                except Exception:
+                    pass
+
+            retry = dict(job.get("retry") or {})
+            count = int(retry.get("count", 0))
+            maximum = int(retry.get("max", 2))
+            retry["count"] = count + 1
+            job["retry"] = retry
+            job["worker_id"] = None
+            job["cancel_requested"] = False
+            job["error"] = "Colab 런타임 종료로 중단된 작업을 워커가 자동 회수했습니다."
+            job["updated_at"] = utc_now()
+
+            if count < maximum:
+                job["status"] = "queued"
+                job["stage"] = "worker_recovered_stale_job"
+                job["progress"] = 0
+                target = self.queued / path.name
+            else:
+                job["status"] = "failed"
+                job["stage"] = "stale_retry_exhausted"
+                job["finished_at"] = utc_now()
+                target = self.failed / path.name
+
+            atomic_json(target, job)
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            recovered += 1
+        return recovered
 
     def pick_job(self) -> Path | None:
         candidates = []
@@ -371,8 +436,10 @@ class DriveWorker:
     def loop(self, once: bool = False) -> None:
         if not (self.ltx_home / "inference.py").exists():
             raise FileNotFoundError(self.ltx_home / "inference.py")
+        self.recover_stale_jobs(300)
         self.write_heartbeat("idle")
         while True:
+            self.recover_stale_jobs(300)
             job_path = self.pick_job()
             if job_path is None:
                 self.write_heartbeat("idle")
