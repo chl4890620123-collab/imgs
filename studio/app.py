@@ -22,6 +22,8 @@ from inference import available_backends
 from performance import performance_plan_text
 from ltx_runner import available as ltx_available, build_job, finalize_job
 from remote_jobs import RemoteQueue, default_queue_root
+from performance_report import report_text as colab_performance_report
+from quality_review import regeneration_plan
 
 
 class StudioWindow(QMainWindow):
@@ -268,10 +270,22 @@ class StudioWindow(QMainWindow):
         submit_remote = QPushButton("선택 컷 Colab 큐 등록")
         submit_remote.clicked.connect(self.submit_colab_shot)
         remote_buttons.addWidget(submit_remote)
+        submit_scene = QPushButton("장면 우선 컷 일괄 등록")
+        submit_scene.clicked.connect(self.submit_colab_scene)
+        remote_buttons.addWidget(submit_scene)
         refresh_remote = QPushButton("상태 새로고침")
         refresh_remote.clicked.connect(lambda: self.refresh_remote_queue(silent=False))
         remote_buttons.addWidget(refresh_remote)
         remote_layout.addRow(remote_buttons)
+
+        remote_quality = QHBoxLayout()
+        regenerate = QPushButton("불량 컷만 재생성")
+        regenerate.clicked.connect(self.submit_bad_shots)
+        remote_quality.addWidget(regenerate)
+        perf_report = QPushButton("성능 리포트")
+        perf_report.clicked.connect(self.show_colab_performance)
+        remote_quality.addWidget(perf_report)
+        remote_layout.addRow(remote_quality)
 
         remote_manage = QHBoxLayout()
         retry_remote = QPushButton("실패 작업 재시도")
@@ -514,11 +528,86 @@ class StudioWindow(QMainWindow):
             f"{shot.id}\n{job['job_id']}\n\nColab Worker 노트북이 실행 중이면 자동으로 가져갑니다.",
         )
 
+    def submit_colab_scene(self):
+        self.save_video_recipe()
+        scene_id = self._current_scene_id()
+        recipe = self.recipe_store.get(scene_id)
+        if recipe.inference.backend != "ltx-2b":
+            return QMessageBox.information(
+                self,
+                "Colab GPU",
+                "현재 Colab 워커는 ltx-2b 장면만 일괄 등록합니다.",
+            )
+        try:
+            queue = self._remote_queue()
+            jobs = queue.submit_scene_priority(
+                self.project,
+                scene_id,
+                recipe,
+                self.project_dir,
+            )
+            for job in jobs:
+                self.project.shot(job["shot_id"]).generation_status = "queued"
+            self.project.save(self.project_path)
+            self.refresh_shot_combo()
+            self.refresh_remote_queue(silent=True)
+            QMessageBox.information(
+                self,
+                "장면 Colab 등록",
+                f"장면 {scene_id}에서 호출 예산 {recipe.call_budget} 기준 {len(jobs)}개 컷을 등록했습니다.",
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "장면 등록 실패", str(exc))
+
+    def submit_bad_shots(self):
+        self.save_video_recipe()
+        scene_id = self._current_scene_id()
+        recipe = self.recipe_store.get(scene_id)
+        plan = regeneration_plan(self.project, scene_id, recipe)
+        if not plan:
+            return QMessageBox.information(
+                self,
+                "선택 재생성",
+                "현재 품질 점수 기준으로 다시 생성할 컷이 없습니다.",
+            )
+        try:
+            queue = self._remote_queue()
+            jobs = []
+            for item in plan:
+                shot = self.project.shot(item.shot_id)
+                latest = queue.latest_job_for_shot(shot.id)
+                if latest and latest.get("status") in {"queued", "running"}:
+                    continue
+                jobs.append(queue.submit_shot(self.project, shot, recipe, self.project_dir))
+                shot.generation_status = "queued"
+            self.project.save(self.project_path)
+            self.refresh_shot_combo()
+            QMessageBox.information(
+                self,
+                "불량 컷 재생성",
+                f"{len(jobs)}개 컷을 Colab 큐에 등록했습니다.\n"
+                + "\n".join(f"{x.shot_id}: {x.reason}" for x in plan),
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "재생성 등록 실패", str(exc))
+
+    def show_colab_performance(self):
+        try:
+            queue = self._remote_queue()
+            QMessageBox.information(
+                self,
+                "Colab GPU 성능 리포트",
+                colab_performance_report(queue.list_jobs(["done", "failed"])),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "성능 리포트", str(exc))
+
     def refresh_remote_queue(self, silent: bool = True):
         try:
             queue = self._remote_queue()
+            recovered = queue.recover_stale_running(timeout_seconds=300)
             synced = queue.sync_all_done(self.project, self.project_path)
-            changed = bool(synced)
+            changed = bool(synced or recovered)
             for shot in self.project.shots:
                 job = queue.latest_job_for_shot(shot.id)
                 if not job:
@@ -547,7 +636,7 @@ class StudioWindow(QMainWindow):
                     self,
                     "Colab GPU 상태",
                     f"{queue.worker_summary()}\n대기/실행 {active} · 완료 {done} · 실패 {failed}\n"
-                    f"자동 반영 {len(synced)}개",
+                    f"자동 반영 {len(synced)}개 · 끊긴 작업 회수 {len(recovered)}개",
                 )
         except Exception as exc:
             if hasattr(self, "remote_status_label"):

@@ -34,6 +34,15 @@ def frames_for_duration(duration_sec: float, fps: int) -> int:
     return n * 8 + 1
 
 
+def parse_time(value: str | None) -> float:
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
+
+
 class DriveWorker:
     def __init__(
         self,
@@ -60,27 +69,109 @@ class DriveWorker:
         ]:
             path.mkdir(parents=True, exist_ok=True)
 
-    def gpu_name(self) -> str:
+    def gpu_snapshot(self) -> dict:
         try:
             result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                [
+                    "nvidia-smi",
+                    "--query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu",
+                    "--format=csv,noheader,nounits",
+                ],
                 check=True,
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
-            return result.stdout.strip().splitlines()[0] or "CUDA GPU"
+            row = result.stdout.strip().splitlines()[0]
+            name, total, used, util, temp = [x.strip() for x in row.split(",", 4)]
+            return {
+                "gpu_name": name or "CUDA GPU",
+                "memory_total_mb": float(total),
+                "memory_used_mb": float(used),
+                "gpu_utilization": float(util),
+                "temperature_c": float(temp),
+            }
         except Exception:
-            return "unknown"
+            return {
+                "gpu_name": "unknown",
+                "memory_total_mb": None,
+                "memory_used_mb": None,
+                "gpu_utilization": None,
+                "temperature_c": None,
+            }
+
+    def gpu_name(self) -> str:
+        return str(self.gpu_snapshot().get("gpu_name") or "unknown")
 
     def write_heartbeat(self, status: str, job_id: str | None = None) -> None:
+        snapshot = self.gpu_snapshot()
         atomic_json(self.heartbeat, {
             "worker_id": self.worker_id,
             "status": status,
-            "gpu": self.gpu_name(),
+            "gpu": snapshot["gpu_name"],
+            "memory_total_mb": snapshot["memory_total_mb"],
+            "memory_used_mb": snapshot["memory_used_mb"],
+            "gpu_utilization": snapshot["gpu_utilization"],
+            "temperature_c": snapshot["temperature_c"],
             "current_job": job_id,
             "updated_at": utc_now(),
         })
+
+    def recover_stale_jobs(self, timeout_seconds: float = 300.0) -> int:
+        """Requeue abandoned running jobs after a Colab runtime disconnects."""
+        timeout_seconds = max(60.0, float(timeout_seconds))
+        recovered = 0
+        now = time.time()
+        for path in list(self.running.glob("*.json")):
+            try:
+                job = read_json(path)
+            except Exception:
+                continue
+            age = now - parse_time(job.get("updated_at"))
+            if age < timeout_seconds:
+                continue
+
+            worker_id = str(job.get("worker_id") or "")
+            heartbeat = (
+                self.root / "workers" / "heartbeat" / f"{worker_id}.json"
+                if worker_id else None
+            )
+            if heartbeat and heartbeat.exists():
+                try:
+                    hb = read_json(heartbeat)
+                    if now - parse_time(hb.get("updated_at")) < 90.0:
+                        continue
+                except Exception:
+                    pass
+
+            retry = dict(job.get("retry") or {})
+            count = int(retry.get("count", 0))
+            maximum = int(retry.get("max", 2))
+            retry["count"] = count + 1
+            job["retry"] = retry
+            job["worker_id"] = None
+            job["cancel_requested"] = False
+            job["error"] = "Colab 런타임 종료로 중단된 작업을 워커가 자동 회수했습니다."
+            job["updated_at"] = utc_now()
+
+            if count < maximum:
+                job["status"] = "queued"
+                job["stage"] = "worker_recovered_stale_job"
+                job["progress"] = 0
+                target = self.queued / path.name
+            else:
+                job["status"] = "failed"
+                job["stage"] = "stale_retry_exhausted"
+                job["finished_at"] = utc_now()
+                target = self.failed / path.name
+
+            atomic_json(target, job)
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            recovered += 1
+        return recovered
 
     def pick_job(self) -> Path | None:
         candidates = []
@@ -188,6 +279,12 @@ class DriveWorker:
                 log.write("\n=== " + utc_now() + " ===\n")
                 log.write(" ".join(cmd[:2]) + " [arguments hidden in UI]\n")
                 log.flush()
+                started = time.perf_counter()
+                frame_count = frames_for_duration(
+                    job["input"]["duration_sec"],
+                    job["input"]["fps"],
+                )
+                gpu_samples: list[dict] = []
                 process = subprocess.Popen(
                     cmd,
                     cwd=self.ltx_home,
@@ -198,16 +295,30 @@ class DriveWorker:
                 while process.poll() is None:
                     time.sleep(3)
                     current = read_json(path)
+                    snapshot = self.gpu_snapshot()
+                    gpu_samples.append(snapshot)
                     if current.get("cancel_requested"):
                         process.terminate()
                         try:
                             process.wait(timeout=12)
                         except subprocess.TimeoutExpired:
                             process.kill()
-                        self.finish(path, "cancelled", stage="cancelled_during_generation")
+                        elapsed = max(0.001, time.perf_counter() - started)
+                        self.finish(
+                            path,
+                            "cancelled",
+                            stage="cancelled_during_generation",
+                            metrics=self._metrics(gpu_samples, elapsed, frame_count),
+                        )
                         return
                     self.update(path, stage="generate", progress=55)
                     self.write_heartbeat("generating", job_id)
+
+                elapsed = max(0.001, time.perf_counter() - started)
+                if not gpu_samples:
+                    gpu_samples.append(self.gpu_snapshot())
+                metrics = self._metrics(gpu_samples, elapsed, frame_count)
+                self.update(path, metrics=metrics)
 
                 if process.returncode != 0:
                     raise RuntimeError(f"LTX 종료 코드 {process.returncode}")
@@ -223,6 +334,10 @@ class DriveWorker:
             result = self.root / job["output"]["result_file"]
             result.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(clips[-1], result)
+            current = read_json(path)
+            metrics = dict(current.get("metrics") or {})
+            metrics["output_bytes"] = result.stat().st_size
+            metrics["output_megabytes"] = round(result.stat().st_size / 1024 / 1024, 3)
             self.finish(
                 path,
                 "done",
@@ -230,7 +345,46 @@ class DriveWorker:
                 progress=100,
                 finished_at=utc_now(),
                 error=None,
+                metrics=metrics,
             )
+
+    @staticmethod
+    def _metrics(samples: list[dict], elapsed: float, frame_count: int) -> dict:
+        used = [
+            float(x["memory_used_mb"])
+            for x in samples
+            if x.get("memory_used_mb") is not None
+        ]
+        util = [
+            float(x["gpu_utilization"])
+            for x in samples
+            if x.get("gpu_utilization") is not None
+        ]
+        temps = [
+            float(x["temperature_c"])
+            for x in samples
+            if x.get("temperature_c") is not None
+        ]
+        total = next(
+            (float(x["memory_total_mb"]) for x in samples if x.get("memory_total_mb") is not None),
+            None,
+        )
+        gpu_name = next(
+            (str(x["gpu_name"]) for x in samples if x.get("gpu_name") not in {None, "unknown"}),
+            "unknown",
+        )
+        return {
+            "gpu_name": gpu_name,
+            "gpu_memory_total_mb": total,
+            "peak_vram_mb": max(used) if used else None,
+            "avg_gpu_utilization": sum(util) / len(util) if util else None,
+            "peak_temperature_c": max(temps) if temps else None,
+            "elapsed_sec": elapsed,
+            "frames": int(frame_count),
+            "sec_per_frame": elapsed / frame_count if frame_count else None,
+            "generated_frames_per_sec": frame_count / elapsed if elapsed else None,
+            "sample_count": len(samples),
+        }
 
     def finish(self, path: Path, state: str, **changes) -> None:
         job = read_json(path)
@@ -282,8 +436,10 @@ class DriveWorker:
     def loop(self, once: bool = False) -> None:
         if not (self.ltx_home / "inference.py").exists():
             raise FileNotFoundError(self.ltx_home / "inference.py")
+        self.recover_stale_jobs(300)
         self.write_heartbeat("idle")
         while True:
+            self.recover_stale_jobs(300)
             job_path = self.pick_job()
             if job_path is None:
                 self.write_heartbeat("idle")

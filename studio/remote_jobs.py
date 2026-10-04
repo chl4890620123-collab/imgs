@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from performance import build_shot_prompt
+from performance import build_shot_prompt, choose_generation_shots
 from project import Shot, StudioProject
 from video_recipe import VideoRecipe
 
@@ -133,6 +133,90 @@ class RemoteQueue:
     def latest_job_for_shot(self, shot_id: str) -> dict | None:
         jobs = [x for x in self.list_jobs() if x.get("shot_id") == shot_id]
         return jobs[0] if jobs else None
+
+    def submit_scene_priority(
+        self,
+        project: StudioProject,
+        scene_id: int,
+        recipe: VideoRecipe,
+        project_dir: str | Path,
+        max_retries: int = 2,
+    ) -> list[dict]:
+        """Queue only the highest-value shots up to the scene call budget."""
+        jobs: list[dict] = []
+        selected = choose_generation_shots(project, scene_id, recipe)
+        for plan in selected:
+            shot = project.shot(plan.shot_id)
+            latest = self.latest_job_for_shot(shot.id)
+            if latest and latest.get("status") in {"queued", "running"}:
+                continue
+            jobs.append(
+                self.submit_shot(
+                    project,
+                    shot,
+                    recipe,
+                    project_dir,
+                    max_retries=max_retries,
+                )
+            )
+        return jobs
+
+    def recover_stale_running(
+        self,
+        timeout_seconds: float = 300.0,
+    ) -> list[dict]:
+        """Recover jobs left in running when a Colab runtime disappears.
+
+        A running job is only reclaimed when its own update timestamp is stale
+        and the worker heartbeat is absent/stale, reducing false recovery during
+        normal Drive sync latency.
+        """
+        timeout_seconds = max(60.0, float(timeout_seconds))
+        workers = {x.worker_id: x for x in self.worker_states()}
+        recovered: list[dict] = []
+
+        for path in list(self.jobs["running"].glob("*.json")):
+            try:
+                job = self.read_json(path)
+            except Exception:
+                continue
+            age = time.time() - parse_time(job.get("updated_at"))
+            if age < timeout_seconds:
+                continue
+
+            worker_id = str(job.get("worker_id") or "")
+            worker = workers.get(worker_id)
+            if worker is not None and worker.online:
+                continue
+
+            retry = dict(job.get("retry") or {})
+            count = int(retry.get("count", 0))
+            maximum = int(retry.get("max", 2))
+            retry["count"] = count + 1
+            job["retry"] = retry
+            job["worker_id"] = None
+            job["cancel_requested"] = False
+            job["error"] = "Colab 워커 heartbeat가 끊겨 실행 중 작업을 자동 회수했습니다."
+            job["updated_at"] = utc_now()
+
+            if count < maximum:
+                job["status"] = "queued"
+                job["stage"] = "recovered_from_stale_worker"
+                job["progress"] = 0
+                target = self.jobs["queued"] / path.name
+            else:
+                job["status"] = "failed"
+                job["stage"] = "stale_worker_retry_exhausted"
+                job["finished_at"] = utc_now()
+                target = self.jobs["failed"] / path.name
+
+            self._atomic_json(target, job)
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            recovered.append(job)
+        return recovered
 
     def _stage_reference(
         self,

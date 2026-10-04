@@ -28,6 +28,10 @@ jobs:
         run: |
           python studio/test_core.py
           python studio/test_remote_jobs.py
+      - name: Colab worker lifecycle test
+        env:
+          PYTHONPATH: studio:colab
+        run: python colab/test_drive_worker.py
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Real render integration test
