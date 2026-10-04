@@ -13,6 +13,9 @@ from prompt_engine import apply_plan, plan_instruction
 from video_recipe import RecipeStore, apply_preset
 from scene_prompt import build_scene_generation_prompt
 from dialogue_audit import audit_text
+from performance import build_shot_prompt, performance_plan_text
+from quality_review import mark_shot_quality, regeneration_plan
+from ltx_runner import available as ltx_available, build_job, run_job
 
 
 mcp = MCPServer(
@@ -54,6 +57,19 @@ def get_project_state() -> dict:
             name: {"voice_mode": profile.mode, "voice": profile.voice_name}
             for name, profile in project.characters.items()
         },
+        "shots": [
+            {
+                "id": shot.id,
+                "scene_id": shot.scene_id,
+                "start": shot.start,
+                "duration": shot.duration,
+                "visual": shot.visual,
+                "generation_status": shot.generation_status,
+                "quality_score": shot.quality_score,
+                "quality_flags": shot.quality_flags,
+            }
+            for shot in project.shots
+        ],
         "scenes": [
             {
                 "id": scene.id,
@@ -159,6 +175,72 @@ def get_scene_generation_prompt(scene_id: int) -> str:
 
 
 @mcp.tool()
+def get_scene_performance_plan(scene_id: int) -> str:
+    """Return shot-by-shot acting, gaze, dialogue and reaction timing."""
+    _, project, recipes = _load()
+    return performance_plan_text(project, scene_id, recipes.get(scene_id))
+
+
+@mcp.tool()
+def get_shot_generation_prompt(shot_id: str) -> str:
+    """Return the final concise LTX prompt for one shot."""
+    _, project, recipes = _load()
+    shot = project.shot(shot_id)
+    return build_shot_prompt(project, shot, recipes.get(shot.scene_id))
+
+
+@mcp.tool()
+def set_shot_quality(
+    shot_id: str,
+    score: float,
+    flags: list[str] | None = None,
+) -> dict:
+    """Store a quality score and failure flags so only bad shots are regenerated."""
+    path, project, _ = _load()
+    shot = mark_shot_quality(project, shot_id, score, flags)
+    project.save(path)
+    return asdict(shot)
+
+
+@mcp.tool()
+def get_regeneration_plan(scene_id: int, threshold: float = 72.0) -> list[dict]:
+    """Return only the low-quality generated shots worth another AI call."""
+    _, project, recipes = _load()
+    return [
+        asdict(x)
+        for x in regeneration_plan(project, scene_id, recipes.get(scene_id), threshold)
+    ]
+
+
+@mcp.tool()
+def run_ltx_shot(shot_id: str) -> dict:
+    """Generate one shot with local LTX-Video when LTX_VIDEO_HOME and CUDA are available."""
+    path, project, recipes = _load()
+    ok, detail = ltx_available()
+    if not ok:
+        raise RuntimeError(detail)
+    shot = project.shot(shot_id)
+    recipe = recipes.get(shot.scene_id)
+    if recipe.inference.backend != "ltx-2b":
+        raise ValueError("현재 직접 실행기는 ltx-2b 백엔드만 지원합니다.")
+    job = build_job(project, shot, recipe, path.parent)
+    shot.generation_status = "generating"
+    project.save(path)
+    try:
+        output = run_job(job, cwd=detail)
+        shot.visual = str(output.relative_to(path.parent)).replace("\\", "/")
+        shot.generation_status = "ready"
+        shot.quality_score = None
+        shot.quality_flags = []
+        project.save(path)
+        return {"shot_id": shot.id, "output": str(output), "num_frames": job.num_frames}
+    except Exception:
+        shot.generation_status = "failed"
+        project.save(path)
+        raise
+
+
+@mcp.tool()
 def get_dialogue_audit() -> str:
     """Audit dialogue density and flag silent or unusually sparse long scenes."""
     _, project, _ = _load()
@@ -190,6 +272,7 @@ def scene_resource(scene_id: str) -> str:
         {
             "scene": asdict(scene),
             "video_recipe": asdict(recipes.get(sid)),
+            "shots": [asdict(x) for x in project.scene_shots(sid)],
             "dialogue": [asdict(x) for x in project.dialogue if x.scene_id == sid],
         },
         ensure_ascii=False,
