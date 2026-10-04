@@ -18,6 +18,7 @@ class InferenceSettings:
     seed: int = 1
     motion_strength: int = 58
     character_lock: int = 82
+    creative_prompt: str = ""
     camera_prompt: str = "slow cinematic push-in"
     negative_prompt: str = "flicker, duplicate limbs, warped face, text, watermark"
     start_frame: str | None = None
@@ -38,6 +39,7 @@ class LocalPostSettings:
     shake: int = 0
     contrast: int = 50
     saturation: int = 45
+    sharpness: int = 50
     film_grain: int = 12
     motion_blur: int = 18
     vignette: int = 10

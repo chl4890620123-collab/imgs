@@ -3,7 +3,8 @@ import tempfile
 
 from project import DialogueLine, Scene, StudioProject, VoiceProfile
 from render import write_srt
-from video_recipe import VideoRecipe, apply_preset, estimate_calls
+from video_recipe import VideoRecipe, RecipeStore, apply_preset, estimate_calls
+from prompt_engine import plan_instruction, apply_plan
 
 
 def test_voice_switching():
@@ -44,8 +45,39 @@ def test_video_recipe_cache_key_ignores_local_post():
     assert estimate_calls(15, "high") == 30
 
 
+def test_director_prompt_plan_and_apply():
+    p = StudioProject(
+        title="x",
+        characters={"서진우": VoiceProfile(mode="ai")},
+        scenes=[Scene(9, "이세계", 0, 10)],
+    )
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        project_file = root / "project.json"
+        p.save(project_file)
+        store = RecipeStore(root / "recipes.json")
+        plan = plan_instruction(
+            "장면 9에서 더 역동적으로, 캐릭터 일관성 90, 선명도 75, 1080p. "
+            "카메라는 낮은 각도로 따라가. 서진우는 친구 녹음으로.",
+            p,
+            current_scene_id=9,
+        )
+        assert plan.scene_id == 9
+        kinds = {x.kind for x in plan.actions}
+        assert {"scene_prompt", "motion_delta", "character_lock", "sharpness", "output_resolution", "camera", "voice_mode"} <= kinds
+        changed = apply_plan(plan, p, project_file, store)
+        assert changed
+        recipe = store.get(9)
+        assert recipe.inference.creative_prompt.startswith("장면 9")
+        assert recipe.inference.character_lock == 90
+        assert recipe.post.sharpness == 75
+        assert recipe.post.upscale_target == "1080p"
+        assert p.characters["서진우"].mode == "external"
+
+
 if __name__ == "__main__":
     test_voice_switching()
     test_roundtrip_and_srt()
     test_video_recipe_cache_key_ignores_local_post()
+    test_director_prompt_plan_and_apply()
     print("ok")
