@@ -312,3 +312,35 @@ Colab은 heartbeat를 `workers/heartbeat/*.json`에 기록합니다.
 
 > Colab은 상시 서버가 아닙니다. 런타임이 끊기면 워커 heartbeat가 멈추며,
 > 다시 노트북의 Worker 셀을 실행하면 남아 있는 queued 작업부터 이어서 처리합니다.
+
+
+## Colab 안정성 / 성능 측정
+
+Colab 워커와 Studio는 끊김 복구와 성능 기록을 함께 관리합니다.
+
+- 실행 중 작업이 5분 이상 갱신되지 않고 해당 워커 heartbeat도 끊긴 경우 자동 회수
+- 재시도 한도가 남아 있으면 `queued`로 복귀, 한도 소진 시 `failed`
+- Colab 워커가 다시 시작될 때도 stale 작업을 자체적으로 회수
+- 장면의 모든 Shot을 무조건 보내지 않고 **호출 예산만큼 연기/행동 중요도가 높은 Shot만 일괄 등록**
+- 품질 점수/오류 플래그가 나쁜 Shot만 **불량 컷 재생성**
+- 작업별 실제 생성 시간, 생성 프레임 수, 초/프레임, peak VRAM, 평균 GPU 사용률,
+  최고 GPU 온도, 출력 파일 크기를 Job JSON의 `metrics`에 기록
+- 앱의 **성능 리포트**에서 GPU/해상도별 평균 성능과 성공률 확인
+
+CLI로도 확인할 수 있습니다.
+
+```bash
+PYTHONPATH=studio python studio/benchmark_colab.py /path/to/SASEOK_GPU_QUEUE
+PYTHONPATH=studio python studio/benchmark_colab.py /path/to/SASEOK_GPU_QUEUE --json benchmark.json
+```
+
+MCP에는 다음 도구도 추가됩니다.
+
+- `submit_colab_scene`: 현재 호출 예산 기준 장면의 중요 Shot만 등록
+- `submit_colab_regeneration`: 품질 기준 미달 Shot만 등록
+- `recover_stale_colab_jobs`: 끊긴 런타임의 실행 중 작업 회수
+- `get_colab_performance_report`: GPU/VRAM/생성속도/성공률 요약
+
+CI는 실제 GPU 대신 가짜 LTX 실행기를 사용해
+**queued → running → worker 실행 → 결과 복사 → done → metrics 기록** 전체 생명주기를 검증합니다.
+실제 Tesla T4/L4 등의 생성시간과 VRAM 수치는 Colab GPU에서 첫 Shot이 완료된 뒤 자동 누적됩니다.
