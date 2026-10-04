@@ -90,3 +90,64 @@ python studio/app.py saseok_studio_project.json
 반대로 모델, seed, Steps, Guidance, 동작 강도, 캐릭터 참조 등 실제 추론 결과에 영향을 주는 값이 바뀔 때만 새 영상 생성 슬롯이 필요합니다.
 
 `호출 계획 보기`를 누르면 현재 캐시로 재사용 가능한 컷과 새로 생성해야 할 컷의 개수를 먼저 보여줍니다.
+
+
+## 감독 프롬프트
+
+앱 상단의 **감독 프롬프트**에 자연어로 지시할 수 있습니다.
+
+예:
+
+```text
+장면 9에서 리아가 더 빠르게 진우를 밀치고,
+카메라는 낮은 각도로 따라가.
+캐릭터 일관성 90, 선명도 75, 1080p.
+서진우는 친구 녹음으로.
+```
+
+먼저 **변경 미리보기**로 어떤 설정이 바뀌는지 확인한 뒤 **프롬프트 적용**을 누릅니다.
+
+알아듣는 설정은 구조화해서 적용하고, 나머지 대화/행동/연기/장면 지시는 버리지 않고
+해당 장면의 `creative_prompt`에 원문 그대로 보존합니다. 이후 LTX/Hunyuan 등 영상 백엔드가
+이 값을 실제 생성 지시로 사용하도록 연결할 수 있습니다.
+
+## MCP 연결
+
+Saseok Studio는 공식 MCP Python SDK v2 기반의 로컬 MCP 서버를 제공합니다.
+MCP에서는 프로젝트 상태를 리소스로 읽고, 장면 지시/품질/성우/호출계획을 도구로 제어할 수 있습니다.
+
+노출되는 주요 도구:
+
+- `get_project_state`
+- `preview_instruction`
+- `apply_instruction`
+- `set_scene_prompt`
+- `set_scene_quality`
+- `set_voice_mode`
+- `get_generation_plan`
+
+리소스:
+
+- `saseok://project`
+- `saseok://scene/{scene_id}`
+
+실행:
+
+```bash
+python -m pip install -r studio/requirements.txt
+python studio/bootstrap.py
+python studio/mcp_server.py
+```
+
+기본 transport는 로컬 MCP 클라이언트에 적합한 stdio입니다.
+
+다른 위치의 프로젝트 파일을 제어할 경우:
+
+Windows PowerShell:
+
+```powershell
+$env:SASEOK_PROJECT="C:\\work\\imgs\\saseok_studio_project.json"
+python studio/mcp_server.py
+```
+
+MCP 클라이언트에서는 `studio/mcp.example.json`의 command/args를 실제 저장소 경로에 맞춰 사용합니다.
