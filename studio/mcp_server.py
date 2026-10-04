@@ -1,0 +1,197 @@
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import asdict
+from pathlib import Path
+
+from mcp.server import MCPServer
+
+from generation_plan import build_plan, plan_text
+from project import StudioProject
+from prompt_engine import apply_plan, plan_instruction
+from video_recipe import RecipeStore, apply_preset
+
+
+mcp = MCPServer(
+    "Saseok Studio",
+    instructions=(
+        "Control the Saseok Studio video project. Prefer preview_instruction before "
+        "apply_instruction when a user's request changes multiple settings."
+    ),
+)
+
+
+def _project_path() -> Path:
+    env = os.getenv("SASEOK_PROJECT")
+    if env:
+        return Path(env).expanduser().resolve()
+    return Path(__file__).resolve().parents[1] / "saseok_studio_project.json"
+
+
+def _load():
+    path = _project_path()
+    if not path.exists():
+        from bootstrap import build
+        build(Path(__file__).resolve().parents[1], path)
+    project = StudioProject.load(path)
+    recipes = RecipeStore(path.parent / "saseok_video_recipes.json")
+    return path, project, recipes
+
+
+@mcp.tool()
+def get_project_state() -> dict:
+    """Read the current Saseok Studio project, characters, scenes and voice modes."""
+    path, project, recipes = _load()
+    return {
+        "project_path": str(path),
+        "title": project.title,
+        "fps": project.fps,
+        "output_size": [project.width, project.height],
+        "characters": {
+            name: {"voice_mode": profile.mode, "voice": profile.voice_name}
+            for name, profile in project.characters.items()
+        },
+        "scenes": [
+            {
+                "id": scene.id,
+                "title": scene.title,
+                "duration": scene.duration,
+                "preset": recipes.get(scene.id).preset,
+                "backend": recipes.get(scene.id).inference.backend,
+                "creative_prompt": recipes.get(scene.id).inference.creative_prompt,
+            }
+            for scene in project.scenes
+        ],
+    }
+
+
+@mcp.tool()
+def preview_instruction(instruction: str, scene_id: int | None = None) -> dict:
+    """Preview how a Korean or English director instruction would change the project."""
+    _, project, _ = _load()
+    plan = plan_instruction(instruction, project, current_scene_id=scene_id)
+    return {
+        "scene_id": plan.scene_id,
+        "instruction": plan.instruction,
+        "actions": [asdict(x) for x in plan.actions],
+        "summary": plan.text(),
+    }
+
+
+@mcp.tool()
+def apply_instruction(instruction: str, scene_id: int | None = None) -> dict:
+    """Apply a director instruction to scene, motion, camera, quality or voice settings."""
+    path, project, recipes = _load()
+    plan = plan_instruction(instruction, project, current_scene_id=scene_id)
+    changed = apply_plan(plan, project, path, recipes)
+    return {
+        "applied": changed,
+        "scene_id": plan.scene_id,
+        "instruction": instruction,
+    }
+
+
+@mcp.tool()
+def set_scene_prompt(scene_id: int, instruction: str) -> dict:
+    """Set the full natural-language creative/action/dialogue direction for one scene."""
+    path, project, recipes = _load()
+    if not any(x.id == scene_id for x in project.scenes):
+        raise ValueError(f"장면 {scene_id}을 찾을 수 없습니다.")
+    recipe = recipes.get(scene_id)
+    recipe.inference.creative_prompt = instruction.strip()
+    recipes.save()
+    return {"scene_id": scene_id, "creative_prompt": recipe.inference.creative_prompt}
+
+
+@mcp.tool()
+def set_scene_quality(
+    scene_id: int,
+    preset: str = "high",
+    output_resolution: str = "1080p",
+    sharpness: int = 50,
+    fps: int = 24,
+) -> dict:
+    """Set scene quality with high-level controls while keeping advanced settings editable."""
+    _, project, recipes = _load()
+    if not any(x.id == scene_id for x in project.scenes):
+        raise ValueError(f"장면 {scene_id}을 찾을 수 없습니다.")
+    if preset not in {"fast", "high", "cinematic"}:
+        raise ValueError("preset은 fast/high/cinematic 중 하나여야 합니다.")
+    if output_resolution not in {"720p", "1080p", "1440p", "4k"}:
+        raise ValueError("output_resolution은 720p/1080p/1440p/4k 중 하나여야 합니다.")
+    recipe = apply_preset(recipes.get(scene_id), preset)
+    recipe.post.upscale = True
+    recipe.post.upscale_target = output_resolution
+    recipe.post.sharpness = max(0, min(100, sharpness))
+    recipe.inference.fps = fps
+    recipe.post.interpolation_fps = fps
+    recipes.save()
+    return {
+        "scene_id": scene_id,
+        "preset": preset,
+        "output_resolution": output_resolution,
+        "sharpness": recipe.post.sharpness,
+        "fps": fps,
+    }
+
+
+@mcp.tool()
+def set_voice_mode(character: str, mode: str) -> dict:
+    """Switch a character between AI voice, friend/external recording, or mute."""
+    path, project, recipes = _load()
+    if character not in project.characters:
+        raise ValueError(f"캐릭터를 찾을 수 없습니다: {character}")
+    if mode not in {"ai", "external", "muted"}:
+        raise ValueError("mode는 ai/external/muted 중 하나여야 합니다.")
+    project.profile(character).mode = mode
+    project.save(path)
+    return {"character": character, "mode": mode}
+
+
+@mcp.tool()
+def get_generation_plan() -> str:
+    """Return planned AI video calls and cache reuse before generation."""
+    path, project, recipes = _load()
+    return plan_text(build_plan(project, path.parent, recipes))
+
+
+@mcp.resource("saseok://project")
+def project_resource() -> str:
+    """Current project state as JSON."""
+    return json.dumps(get_project_state(), ensure_ascii=False, indent=2)
+
+
+@mcp.resource("saseok://scene/{scene_id}")
+def scene_resource(scene_id: str) -> str:
+    """One scene's current generation settings as JSON."""
+    _, project, recipes = _load()
+    sid = int(scene_id)
+    scene = next((x for x in project.scenes if x.id == sid), None)
+    if scene is None:
+        raise ValueError(f"장면 {sid}을 찾을 수 없습니다.")
+    return json.dumps(
+        {
+            "scene": asdict(scene),
+            "video_recipe": asdict(recipes.get(sid)),
+            "dialogue": [asdict(x) for x in project.dialogue if x.scene_id == sid],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+@mcp.prompt()
+def direct_scene(scene_id: str, instruction: str) -> str:
+    """Build a safe director request that previews changes before applying them."""
+    return (
+        f"Saseok Studio의 장면 {scene_id}을 수정한다.\n"
+        f"감독 지시: {instruction}\n\n"
+        "먼저 preview_instruction 도구로 변경 계획을 확인하고, "
+        "의도와 일치하면 apply_instruction을 호출하라. "
+        "대사/행동/카메라의 세부 지시는 삭제하지 말고 creative_prompt에 보존하라."
+    )
+
+
+if __name__ == "__main__":
+    mcp.run()
