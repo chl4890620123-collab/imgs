@@ -16,6 +16,7 @@ from dialogue_audit import audit_text
 from performance import build_shot_prompt, performance_plan_text
 from quality_review import mark_shot_quality, regeneration_plan
 from ltx_runner import available as ltx_available, build_job, run_job
+from remote_jobs import RemoteQueue, default_queue_root
 
 
 mcp = MCPServer(
@@ -32,6 +33,10 @@ def _project_path() -> Path:
     if env:
         return Path(env).expanduser().resolve()
     return Path(__file__).resolve().parents[1] / "saseok_studio_project.json"
+
+
+def _remote_queue(path: Path) -> RemoteQueue:
+    return RemoteQueue(default_queue_root(path.parent))
 
 
 def _load():
@@ -238,6 +243,77 @@ def run_ltx_shot(shot_id: str) -> dict:
         shot.generation_status = "failed"
         project.save(path)
         raise
+
+
+@mcp.tool()
+def submit_colab_shot(shot_id: str) -> dict:
+    """Queue one shot for the Google Drive-backed Colab GPU worker."""
+    path, project, recipes = _load()
+    shot = project.shot(shot_id)
+    recipe = recipes.get(shot.scene_id)
+    if recipe.inference.backend != "ltx-2b":
+        raise ValueError("현재 Colab 워커는 ltx-2b 백엔드만 직접 실행합니다.")
+    queue = _remote_queue(path)
+    job = queue.submit_shot(project, shot, recipe, path.parent)
+    shot.generation_status = "queued"
+    project.save(path)
+    return {
+        "job_id": job["job_id"],
+        "shot_id": shot.id,
+        "status": job["status"],
+        "queue_root": str(queue.root),
+    }
+
+
+@mcp.tool()
+def get_colab_jobs(limit: int = 20) -> dict:
+    """Return recent Colab GPU jobs and current worker heartbeat state."""
+    path, _, _ = _load()
+    queue = _remote_queue(path)
+    jobs = queue.list_jobs()[: max(1, min(100, int(limit)))]
+    workers = [
+        {
+            "worker_id": x.worker_id,
+            "status": x.status,
+            "gpu": x.gpu,
+            "updated_at": x.updated_at,
+            "current_job": x.current_job,
+            "online": x.online,
+        }
+        for x in queue.worker_states()
+    ]
+    return {
+        "queue_root": str(queue.root),
+        "worker_summary": queue.worker_summary(),
+        "workers": workers,
+        "jobs": jobs,
+    }
+
+
+@mcp.tool()
+def sync_colab_results() -> dict:
+    """Copy completed Colab videos into media/generated and attach them to their shots."""
+    path, project, _ = _load()
+    queue = _remote_queue(path)
+    synced = queue.sync_all_done(project, path)
+    return {
+        "count": len(synced),
+        "files": [str(x) for x in synced],
+    }
+
+
+@mcp.tool()
+def retry_colab_job(job_id: str) -> dict:
+    """Retry a failed or cancelled Colab job."""
+    path, _, _ = _load()
+    return _remote_queue(path).retry(job_id)
+
+
+@mcp.tool()
+def cancel_colab_job(job_id: str) -> dict:
+    """Request cancellation of a queued or running Colab job."""
+    path, _, _ = _load()
+    return _remote_queue(path).cancel(job_id)
 
 
 @mcp.tool()
