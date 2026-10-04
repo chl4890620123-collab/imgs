@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from project import Scene, Shot, StudioProject
 from remote_jobs import RemoteQueue, utc_now
 from video_recipe import VideoRecipe, apply_preset
+from performance_report import build_performance_rows, report_text
 
 
 def project_fixture(root: Path) -> tuple[StudioProject, Path, Shot, VideoRecipe]:
@@ -93,8 +95,99 @@ def test_worker_heartbeat_summary():
         assert queue.worker_states()[0].online
 
 
+
+
+def test_stale_running_job_is_recovered():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        project, _, shot, recipe = project_fixture(root)
+        queue = RemoteQueue(root / "queue")
+        job = queue.submit_shot(project, shot, recipe, root)
+        running = queue.move_job(
+            job["job_id"],
+            "running",
+            worker_id="dead-worker",
+            stage="generate",
+            progress=55,
+        )
+        path = queue.find_job_path(job["job_id"])
+        raw = queue.read_json(path)
+        raw["updated_at"] = (
+            datetime.now(timezone.utc) - timedelta(minutes=20)
+        ).isoformat()
+        queue._atomic_json(path, raw)
+
+        recovered = queue.recover_stale_running(timeout_seconds=300)
+        assert len(recovered) == 1
+        now = queue.find_job(job["job_id"])
+        assert now["status"] == "queued"
+        assert now["stage"] == "recovered_from_stale_worker"
+        assert now["retry"]["count"] == 1
+
+
+def test_scene_priority_queue_respects_budget():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        project_path = root / "project.json"
+        project = StudioProject(
+            title="test",
+            scenes=[Scene(9, "이세계", 0.0, 12.0)],
+            shots=[
+                Shot("S09_SH01", 9, 0.0, 4.0, "Ria runs toward Jin-woo"),
+                Shot("S09_SH02", 9, 4.0, 4.0, "arrow attack and Ria pushes Jin-woo"),
+                Shot("S09_SH03", 9, 8.0, 4.0, "quiet battlefield reaction"),
+            ],
+        )
+        project.save(project_path)
+        recipe = apply_preset(VideoRecipe(scene_id=9), "high")
+        recipe.call_budget = 2
+        queue = RemoteQueue(root / "queue")
+        jobs = queue.submit_scene_priority(project, 9, recipe, root)
+        assert len(jobs) == 2
+        assert len({x["shot_id"] for x in jobs}) == 2
+
+
+def test_performance_report_aggregates_metrics():
+    jobs = [
+        {
+            "status": "done",
+            "backend": "ltx-2b",
+            "input": {"width": 768, "height": 432},
+            "metrics": {
+                "gpu_name": "Tesla T4",
+                "elapsed_sec": 60.0,
+                "sec_per_frame": 0.5,
+                "peak_vram_mb": 12000,
+                "avg_gpu_utilization": 80,
+            },
+        },
+        {
+            "status": "failed",
+            "backend": "ltx-2b",
+            "input": {"width": 768, "height": 432},
+            "metrics": {
+                "gpu_name": "Tesla T4",
+                "elapsed_sec": 30.0,
+                "sec_per_frame": 0.25,
+                "peak_vram_mb": 11000,
+                "avg_gpu_utilization": 70,
+            },
+        },
+    ]
+    rows = build_performance_rows(jobs)
+    assert len(rows) == 1
+    assert rows[0].jobs == 2
+    assert rows[0].success_rate == 50.0
+    text = report_text(jobs)
+    assert "Tesla T4" in text
+    assert "성공 50%" in text
+
+
 if __name__ == "__main__":
     test_submit_done_sync()
     test_cancel_and_retry()
     test_worker_heartbeat_summary()
+    test_stale_running_job_is_recovered()
+    test_scene_priority_queue_respects_budget()
+    test_performance_report_aggregates_metrics()
     print("remote queue ok")
