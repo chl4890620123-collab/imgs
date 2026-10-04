@@ -18,12 +18,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Compile studio
-        run: python -m py_compile studio/*.py
+      - name: Compile studio and Colab worker
+        run: |
+          python -m py_compile studio/*.py
+          python -m py_compile colab/*.py
       - name: Core tests
         env:
           PYTHONPATH: studio
-        run: python studio/test_core.py
+        run: |
+          python studio/test_core.py
+          python studio/test_remote_jobs.py
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Real render integration test

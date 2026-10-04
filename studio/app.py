@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QProcess
+from PySide6.QtCore import Qt, QProcess, QTimer
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
     QCheckBox, QDoubleSpinBox, QGroupBox, QLineEdit, QMainWindow, QMessageBox,
@@ -21,6 +21,7 @@ from prompt_engine import apply_plan, plan_instruction
 from inference import available_backends
 from performance import performance_plan_text
 from ltx_runner import available as ltx_available, build_job, finalize_job
+from remote_jobs import RemoteQueue, default_queue_root
 
 
 class StudioWindow(QMainWindow):
@@ -30,12 +31,18 @@ class StudioWindow(QMainWindow):
         self.project_dir = project_path.parent
         self.project = StudioProject.load(project_path)
         self.recipe_store = RecipeStore(self.project_dir / "saseok_video_recipes.json")
+        self.remote_queue_path = default_queue_root(self.project_dir)
         self.setWindowTitle("Saseok Studio — 사석 제작 편집기")
         self.resize(1450, 850)
         self._build_ui()
         self.refresh_table()
         if self.character.count():
             self.load_profile(self.character.currentText())
+        self.remote_timer = QTimer(self)
+        self.remote_timer.setInterval(5000)
+        self.remote_timer.timeout.connect(lambda: self.refresh_remote_queue(silent=True))
+        self.remote_timer.start()
+        self.refresh_remote_queue(silent=True)
 
     def _build_ui(self):
         root = QWidget()
@@ -243,6 +250,40 @@ class StudioWindow(QMainWindow):
         motion_buttons.addWidget(self.generate_shot_button)
         video_layout.addRow(motion_buttons)
 
+        remote_box = QGroupBox("Colab GPU 백그라운드")
+        remote_layout = QFormLayout(remote_box)
+
+        queue_row = QHBoxLayout()
+        self.remote_queue_path_edit = QLineEdit(str(self.remote_queue_path))
+        queue_row.addWidget(self.remote_queue_path_edit)
+        choose_queue = QPushButton("폴더 선택")
+        choose_queue.clicked.connect(self.choose_remote_queue_root)
+        queue_row.addWidget(choose_queue)
+        remote_layout.addRow("공유 큐 폴더", queue_row)
+
+        self.remote_status_label = QLabel("워커 확인 중…")
+        remote_layout.addRow("워커", self.remote_status_label)
+
+        remote_buttons = QHBoxLayout()
+        submit_remote = QPushButton("선택 컷 Colab 큐 등록")
+        submit_remote.clicked.connect(self.submit_colab_shot)
+        remote_buttons.addWidget(submit_remote)
+        refresh_remote = QPushButton("상태 새로고침")
+        refresh_remote.clicked.connect(lambda: self.refresh_remote_queue(silent=False))
+        remote_buttons.addWidget(refresh_remote)
+        remote_layout.addRow(remote_buttons)
+
+        remote_manage = QHBoxLayout()
+        retry_remote = QPushButton("실패 작업 재시도")
+        retry_remote.clicked.connect(self.retry_remote_shot)
+        remote_manage.addWidget(retry_remote)
+        cancel_remote = QPushButton("원격 작업 취소")
+        cancel_remote.clicked.connect(self.cancel_remote_shot)
+        remote_manage.addWidget(cancel_remote)
+        remote_layout.addRow(remote_manage)
+
+        video_layout.addRow(remote_box)
+
         right.addWidget(video_box)
         if self.video_scene.count():
             self.refresh_shot_combo()
@@ -400,8 +441,16 @@ class StudioWindow(QMainWindow):
 
     def refresh_shot_combo(self):
         self.video_shot.clear()
+        icons = {
+            "pending": "·",
+            "queued": "◷",
+            "generating": "▶",
+            "ready": "✓",
+            "failed": "!",
+        }
         for shot in self.project.scene_shots(self._current_scene_id()):
-            status = "✓" if shot.visual else "·"
+            state = "ready" if shot.visual else shot.generation_status
+            status = icons.get(state, "·")
             self.video_shot.addItem(
                 f"{status} {shot.id}  {shot.start:.1f}-{shot.start + shot.duration:.1f}s",
                 shot.id,
@@ -415,6 +464,126 @@ class StudioWindow(QMainWindow):
             return self.project.shot(str(shot_id))
         except KeyError:
             return None
+
+    def _remote_queue(self) -> RemoteQueue:
+        value = self.remote_queue_path_edit.text().strip()
+        if not value:
+            raise ValueError("Colab 공유 큐 폴더를 선택하세요.")
+        return RemoteQueue(Path(value))
+
+    def choose_remote_queue_root(self):
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Google Drive의 SASEOK_GPU_QUEUE 폴더 선택",
+            self.remote_queue_path_edit.text().strip() or str(self.project_dir),
+        )
+        if folder:
+            self.remote_queue_path_edit.setText(folder)
+            self.refresh_remote_queue(silent=True)
+
+    def submit_colab_shot(self):
+        shot = self._current_shot()
+        if shot is None:
+            return QMessageBox.information(self, "컷 선택", "Colab으로 보낼 컷을 먼저 선택하세요.")
+        self.save_video_recipe()
+        recipe = self.recipe_store.get(shot.scene_id)
+        if recipe.inference.backend != "ltx-2b":
+            return QMessageBox.information(
+                self,
+                "Colab GPU",
+                "현재 Colab 워커의 실제 실행 백엔드는 LTX-Video 2B입니다. 추론 엔진을 ltx-2b로 선택하세요.",
+            )
+        try:
+            queue = self._remote_queue()
+            job = queue.submit_shot(
+                self.project,
+                shot,
+                recipe,
+                self.project_dir,
+            )
+        except Exception as exc:
+            return QMessageBox.critical(self, "Colab 작업 등록 실패", str(exc))
+
+        shot.generation_status = "queued"
+        self.project.save(self.project_path)
+        self.refresh_shot_combo()
+        self.refresh_remote_queue(silent=True)
+        QMessageBox.information(
+            self,
+            "Colab GPU 큐 등록 완료",
+            f"{shot.id}\n{job['job_id']}\n\nColab Worker 노트북이 실행 중이면 자동으로 가져갑니다.",
+        )
+
+    def refresh_remote_queue(self, silent: bool = True):
+        try:
+            queue = self._remote_queue()
+            synced = queue.sync_all_done(self.project, self.project_path)
+            changed = bool(synced)
+            for shot in self.project.shots:
+                job = queue.latest_job_for_shot(shot.id)
+                if not job:
+                    continue
+                mapping = {
+                    "queued": "queued",
+                    "running": "generating",
+                    "done": "ready" if shot.visual else "generating",
+                    "failed": "failed",
+                    "cancelled": "pending",
+                }
+                next_state = mapping.get(job.get("status"), shot.generation_status)
+                if next_state != shot.generation_status:
+                    shot.generation_status = next_state
+                    changed = True
+            if changed:
+                self.project.save(self.project_path)
+                self.refresh_shot_combo()
+            self.remote_status_label.setText(queue.worker_summary())
+            if not silent:
+                jobs = queue.list_jobs()
+                active = sum(1 for x in jobs if x.get("status") in {"queued", "running"})
+                done = sum(1 for x in jobs if x.get("status") == "done")
+                failed = sum(1 for x in jobs if x.get("status") == "failed")
+                QMessageBox.information(
+                    self,
+                    "Colab GPU 상태",
+                    f"{queue.worker_summary()}\n대기/실행 {active} · 완료 {done} · 실패 {failed}\n"
+                    f"자동 반영 {len(synced)}개",
+                )
+        except Exception as exc:
+            if hasattr(self, "remote_status_label"):
+                self.remote_status_label.setText("Colab 큐 확인 실패")
+            if not silent:
+                QMessageBox.warning(self, "Colab GPU 상태", str(exc))
+
+    def retry_remote_shot(self):
+        shot = self._current_shot()
+        if shot is None:
+            return
+        try:
+            queue = self._remote_queue()
+            job = queue.latest_job_for_shot(shot.id)
+            if not job:
+                raise ValueError("이 컷의 원격 작업이 없습니다.")
+            queue.retry(job["job_id"])
+            shot.generation_status = "queued"
+            self.project.save(self.project_path)
+            self.refresh_shot_combo()
+        except Exception as exc:
+            QMessageBox.warning(self, "재시도 실패", str(exc))
+
+    def cancel_remote_shot(self):
+        shot = self._current_shot()
+        if shot is None:
+            return
+        try:
+            queue = self._remote_queue()
+            job = queue.latest_job_for_shot(shot.id)
+            if not job:
+                raise ValueError("이 컷의 원격 작업이 없습니다.")
+            queue.cancel(job["job_id"])
+            self.refresh_remote_queue(silent=True)
+        except Exception as exc:
+            QMessageBox.warning(self, "취소 실패", str(exc))
 
     def show_performance_plan(self):
         self.save_video_recipe()

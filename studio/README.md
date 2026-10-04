@@ -223,3 +223,92 @@ GPU가 없거나 LTX 설치가 확인되지 않으면 생성 버튼은 이유를
 - `set_shot_quality`: 품질 점수와 오류 플래그 기록
 - `get_regeneration_plan`: 재생성이 필요한 쇼트만 반환
 - `run_ltx_shot`: CUDA와 LTX가 준비된 머신에서 한 쇼트 실제 생성
+
+
+## Colab GPU 백그라운드 워커
+
+Studio는 Google Drive 동기화 폴더를 작업 큐로 사용해 Colab GPU를 원격 워커처럼 쓸 수 있습니다.
+
+### 1. 로컬 Studio
+
+앱의 **Colab GPU 백그라운드**에서 Google Drive에 동기화되는 `SASEOK_GPU_QUEUE` 폴더를 선택합니다.
+
+환경변수로 고정할 수도 있습니다.
+
+Windows PowerShell:
+
+```powershell
+$env:SASEOK_COLAB_QUEUE_ROOT="G:\\내 드라이브\\SASEOK_GPU_QUEUE"
+python studio/app.py saseok_studio_project.json
+```
+
+Studio에서 **선택 컷 Colab 큐 등록**을 누르면 다음 구조가 자동 생성됩니다.
+
+```text
+SASEOK_GPU_QUEUE/
+  jobs/
+    queued/
+    running/
+    done/
+    failed/
+    cancelled/
+  assets/
+  outputs/
+    shots/
+    logs/
+  workers/
+    heartbeat/
+```
+
+작업 JSON에는 쇼트 프롬프트, 대사 기반 연기 정보가 반영된 최종 프롬프트,
+해상도/FPS/seed/negative prompt와 필요한 참조 파일만 들어갑니다.
+
+### 2. Colab
+
+저장소 루트의 **SASEOK_COLAB_GPU_WORKER.ipynb**를 Colab에서 열고 GPU 런타임으로 실행합니다.
+
+노트북은:
+
+1. Google Drive 마운트
+2. `imgs` 저장소 갱신
+3. 공식 `Lightricks/LTX-Video` 설치
+4. GPU 확인
+5. `colab/drive_worker.py` 실행
+
+순서로 진행됩니다.
+
+워커가 살아 있는 동안 Drive의 `queued` 작업을 가져가 LTX-Video로 생성하고
+`outputs/shots/<JOB_ID>.mp4`에 저장합니다. Studio는 5초 간격으로 상태를 확인하고
+완료 영상을 `media/generated/<SHOT_ID>.mp4`로 자동 복사해 타임라인에 연결합니다.
+
+### 3. 백그라운드 상태
+
+앱에서는 다음 상태를 구분합니다.
+
+- `queued`: Colab 대기
+- `generating`: Colab 생성 중
+- `ready`: 결과 자동 반영 완료
+- `failed`: 재시도 필요
+
+Colab은 heartbeat를 `workers/heartbeat/*.json`에 기록합니다.
+90초 이상 갱신되지 않은 워커는 Studio에서 오프라인으로 표시됩니다.
+
+실행 중 취소 요청도 큐 JSON으로 전달되며 워커가 LTX 프로세스를 종료합니다.
+실패 작업은 워커가 설정된 횟수까지 자동 재시도하고, Studio/MCP에서도 수동 재시도할 수 있습니다.
+
+### 4. MCP
+
+추가된 원격 GPU 도구:
+
+- `submit_colab_shot`
+- `get_colab_jobs`
+- `sync_colab_results`
+- `retry_colab_job`
+- `cancel_colab_job`
+
+따라서 MCP 클라이언트에서도
+**쇼트 선택 → Colab 등록 → 워커 상태 확인 → 결과 동기화 → 실패 컷만 재시도**
+흐름을 제어할 수 있습니다.
+
+> Colab은 상시 서버가 아닙니다. 런타임이 끊기면 워커 heartbeat가 멈추며,
+> 다시 노트북의 Worker 셀을 실행하면 남아 있는 queued 작업부터 이어서 처리합니다.
