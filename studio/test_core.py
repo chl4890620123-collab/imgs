@@ -85,6 +85,8 @@ def test_korean_free_stack_excludes_hunyuan():
     low_vram = {x.key for x in recommended_for_vram(15, "KR")}
     assert "ltx-2b" in low_vram
     assert "wan22" not in low_vram
+    cinematic = apply_preset(VideoRecipe(scene_id=1), "cinematic")
+    assert cinematic.inference.backend == "ltx-2b"
 
 
 def test_dialogue_audit():
