@@ -3,6 +3,7 @@ import tempfile
 
 from project import DialogueLine, Scene, StudioProject, VoiceProfile
 from render import write_srt
+from video_recipe import VideoRecipe, apply_preset, estimate_calls
 
 
 def test_voice_switching():
@@ -32,7 +33,19 @@ def test_roundtrip_and_srt():
         assert "00:00:00,500" in s.read_text(encoding="utf-8")
 
 
+def test_video_recipe_cache_key_ignores_local_post():
+    recipe = apply_preset(VideoRecipe(scene_id=1), "high")
+    first = recipe.inference_fingerprint()
+    recipe.post.contrast = 90
+    recipe.post.camera_zoom = 25
+    assert recipe.inference_fingerprint() == first
+    recipe.inference.seed += 1
+    assert recipe.inference_fingerprint() != first
+    assert estimate_calls(15, "high") == 30
+
+
 if __name__ == "__main__":
     test_voice_switching()
     test_roundtrip_and_srt()
+    test_video_recipe_cache_key_ignores_local_post()
     print("ok")
