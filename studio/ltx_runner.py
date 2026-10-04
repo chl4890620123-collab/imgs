@@ -28,6 +28,10 @@ def frames_for_duration(duration_sec: float, fps: int) -> int:
     return n * 8 + 1
 
 
+def ltx_python() -> str:
+    return os.getenv("LTX_PYTHON", sys.executable)
+
+
 def ltx_home() -> Path | None:
     value = os.getenv("LTX_VIDEO_HOME")
     if not value:
@@ -41,11 +45,20 @@ def available() -> tuple[bool, str]:
     if home is None:
         return False, "LTX_VIDEO_HOME이 설정되지 않았거나 inference.py를 찾을 수 없습니다."
     try:
-        import torch
-        if not torch.cuda.is_available():
-            return False, "CUDA GPU를 찾을 수 없습니다."
-    except Exception:
-        return False, "현재 Python 환경에서 torch/CUDA를 확인할 수 없습니다."
+        probe = subprocess.run(
+            [
+                ltx_python(),
+                "-c",
+                "import torch; raise SystemExit(0 if torch.cuda.is_available() else 2)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if probe.returncode != 0:
+            return False, "LTX Python 환경에서 CUDA GPU를 사용할 수 없습니다."
+    except Exception as exc:
+        return False, f"LTX Python 환경을 확인할 수 없습니다: {exc}"
     return True, str(home)
 
 
@@ -69,7 +82,7 @@ def build_job(
     prompt = build_shot_prompt(project, shot, recipe)
 
     cmd: list[str] = [
-        sys.executable,
+        ltx_python(),
         str(home / "inference.py"),
         "--prompt", prompt,
         "--output_path", str(out_dir),
