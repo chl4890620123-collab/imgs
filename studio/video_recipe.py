@@ -104,9 +104,9 @@ PRESETS: dict[str, dict] = {
     "cinematic": {
         "label": "시네마틱",
         "call_budget": 2,
-        "backend": "hunyuan15",
+        "backend": "ltx-2b",
         "size": (832, 480),
-        "steps": 12,
+        "steps": 16,
         "duration": 6.0,
         "motion": 62,
         "character_lock": 88,
