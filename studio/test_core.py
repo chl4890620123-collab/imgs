@@ -1,13 +1,16 @@
 from pathlib import Path
 import tempfile
 
-from project import DialogueLine, Scene, StudioProject, VoiceProfile
+from project import DialogueLine, Scene, Shot, StudioProject, VoiceProfile
 from render import write_srt
 from video_recipe import VideoRecipe, RecipeStore, apply_preset, estimate_calls
 from prompt_engine import plan_instruction, apply_plan
 from inference import available_backends, recommended_for_vram
 from dialogue_audit import audit_dialogue
 from scene_prompt import build_scene_generation_prompt
+from performance import build_scene_performance_events, build_shot_prompt, choose_generation_shots
+from quality_review import mark_shot_quality, regeneration_plan
+from ltx_runner import frames_for_duration
 
 
 def test_voice_switching():
@@ -116,6 +119,55 @@ def test_scene_prompt_uses_character_dialogue_and_action():
     assert "No subtitles" in prompt
 
 
+
+
+def test_performance_timeline_and_shot_prompt():
+    p = StudioProject(
+        title="x",
+        characters={"리아": VoiceProfile(), "서진우": VoiceProfile()},
+        scenes=[Scene(9, "이세계", 0, 12, description="rainy battlefield")],
+        shots=[
+            Shot("S09_SH01", 9, 0, 6, "Ria sees an incoming arrow and runs toward Jin-woo"),
+            Shot("S09_SH02", 9, 6, 6, "Ria collides with Jin-woo and both hit the mud"),
+        ],
+        dialogue=[
+            DialogueLine("L1", 9, "리아", "엎드려!", 2.0, 3.0),
+            DialogueLine("L2", 9, "서진우", "여긴…….", 3.4, 4.2),
+        ],
+    )
+    recipe = apply_preset(VideoRecipe(scene_id=9), "high")
+    events = build_scene_performance_events(p, 9)
+    assert any(x.kind == "pre_reaction" for x in events)
+    assert any(x.kind == "listener_reaction" for x in events)
+    prompt = build_shot_prompt(p, p.shot("S09_SH01"), recipe)
+    assert "엎드려!" in prompt
+    assert "frontline commander" in prompt
+    assert len(prompt.split()) <= 190
+    chosen = choose_generation_shots(p, 9, recipe)
+    assert 1 <= len(chosen) <= recipe.call_budget
+
+
+def test_selective_regeneration():
+    p = StudioProject(
+        title="x",
+        scenes=[Scene(1, "s", 0, 12)],
+        shots=[
+            Shot("S01_SH01", 1, 0, 6, "a", visual="a.mp4", generation_status="ready"),
+            Shot("S01_SH02", 1, 6, 6, "b", visual="b.mp4", generation_status="ready"),
+        ],
+    )
+    recipe = apply_preset(VideoRecipe(scene_id=1), "high")
+    mark_shot_quality(p, "S01_SH01", 91, [])
+    mark_shot_quality(p, "S01_SH02", 58, ["face_drift", "motion_jitter"])
+    plan = regeneration_plan(p, 1, recipe)
+    assert [x.shot_id for x in plan] == ["S01_SH02"]
+
+
+def test_ltx_frame_count():
+    assert frames_for_duration(6.0, 24) == 145
+    assert frames_for_duration(20.0, 60) <= 257
+
+
 def test_dialogue_audit():
     p = StudioProject(
         title="x",
@@ -136,4 +188,7 @@ if __name__ == "__main__":
     test_korean_free_stack_excludes_hunyuan()
     test_dialogue_audit()
     test_scene_prompt_uses_character_dialogue_and_action()
+    test_performance_timeline_and_shot_prompt()
+    test_selective_regeneration()
+    test_ltx_frame_count()
     print("ok")
