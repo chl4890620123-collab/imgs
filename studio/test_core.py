@@ -80,7 +80,8 @@ def test_director_prompt_plan_and_apply():
 def test_korean_free_stack_excludes_hunyuan():
     keys = {x.key for x in available_backends("KR")}
     assert "hunyuan15" not in keys
-    assert {"ltx-2b", "wan22", "framepack"} <= keys
+    assert {"ltx-2b", "wan22"} <= keys
+    assert "framepack" not in keys
     low_vram = {x.key for x in recommended_for_vram(15, "KR")}
     assert "ltx-2b" in low_vram
     assert "wan22" not in low_vram
