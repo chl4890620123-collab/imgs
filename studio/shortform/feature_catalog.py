@@ -44,9 +44,9 @@ FEATURES: dict[str, FeatureDefinition] = {
     "clipping": FeatureDefinition(
         "clipping",
         "AI Clipping",
-        FeatureStatus.PLANNED,
-        (),
-        "긴 영상에서 하이라이트 후보를 찾는 단계 추가 예정",
+        FeatureStatus.PARTIAL,
+        ("shortform/clipping.py", "shortform/reframe.py", "shortform/pipeline.py"),
+        "로컬 scene/speech 휴리스틱 하이라이트 + 9:16 렌더는 동작. 의미 기반 cloud AI provider는 선택 기능으로 추후 연결",
     ),
     "motion": FeatureDefinition(
         "motion",
