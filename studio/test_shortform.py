@@ -52,3 +52,11 @@ def test_feature_catalog_does_not_overclaim_missing_features():
     assert FEATURES["video"].status == FeatureStatus.READY
     assert FEATURES["clipping"].status == FeatureStatus.PLANNED
     assert FEATURES["lip_sync"].status == FeatureStatus.PLANNED
+
+
+if __name__ == "__main__":
+    test_generate_shortform_plan_is_local_post_first()
+    test_clip_plan_skips_video_generation()
+    test_auto_provider_prefers_local_when_available()
+    test_feature_catalog_does_not_overclaim_missing_features()
+    print("ok")
