@@ -18,6 +18,9 @@ from quality_review import mark_shot_quality, regeneration_plan
 from ltx_runner import available as ltx_available, build_job, run_job
 from remote_jobs import RemoteQueue, default_queue_root
 from performance_report import report_text as colab_performance_report
+from shortform.clipping import find_highlights
+from shortform.feature_catalog import FEATURES
+from shortform.pipeline import run_local_clipping_pipeline
 
 
 mcp = MCPServer(
@@ -38,6 +41,20 @@ def _project_path() -> Path:
 
 def _remote_queue(path: Path) -> RemoteQueue:
     return RemoteQueue(default_queue_root(path.parent))
+
+
+def _resolve_project_media(project_path: Path, value: str) -> Path:
+    """Resolve media inside the project root so MCP cannot escape the workspace."""
+    root = project_path.parent.resolve()
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    candidate = candidate.resolve()
+    if candidate != root and root not in candidate.parents:
+        raise ValueError("source_video는 프로젝트 폴더 안의 파일이어야 합니다.")
+    if not candidate.exists() or not candidate.is_file():
+        raise FileNotFoundError(candidate)
+    return candidate
 
 
 def _load():
@@ -386,6 +403,70 @@ def cancel_colab_job(job_id: str) -> dict:
     """Request cancellation of a queued or running Colab job."""
     path, _, _ = _load()
     return _remote_queue(path).cancel(job_id)
+
+
+@mcp.tool()
+def get_shortform_features() -> dict:
+    """Return the shortform factory feature catalog without claiming unfinished providers are ready."""
+    return {
+        key: {
+            "label": item.label,
+            "status": item.status.value,
+            "existing_modules": list(item.existing_modules),
+            "notes": item.notes,
+        }
+        for key, item in FEATURES.items()
+    }
+
+
+@mcp.tool()
+def analyze_shortform_video(
+    source_video: str,
+    num_highlights: int = 3,
+    target_duration_sec: float = 30.0,
+) -> dict:
+    """Find local highlight candidates using scene changes and speech/silence density.
+
+    source_video must be a file inside the current project folder. This analysis
+    does not call a paid AI API.
+    """
+    path, _, _ = _load()
+    source = _resolve_project_media(path, source_video)
+    highlights = find_highlights(
+        source,
+        num_highlights=max(1, min(20, int(num_highlights))),
+        target_duration_sec=max(6.0, min(60.0, float(target_duration_sec))),
+    )
+    return {
+        "source": str(source),
+        "provider": "local",
+        "method": "scene-change + speech-density heuristic",
+        "highlights": [x.to_dict() for x in highlights],
+    }
+
+
+@mcp.tool()
+def render_shortform_highlights(
+    source_video: str,
+    num_highlights: int = 3,
+    target_duration_sec: float = 30.0,
+    width: int = 1080,
+    height: int = 1920,
+    fps: int = 30,
+) -> dict:
+    """Extract highlight candidates and render them as vertical MP4 files locally."""
+    path, _, _ = _load()
+    source = _resolve_project_media(path, source_video)
+    output_dir = path.parent / "media" / "shorts" / source.stem
+    return run_local_clipping_pipeline(
+        source,
+        output_dir,
+        num_highlights=max(1, min(20, int(num_highlights))),
+        target_duration_sec=max(6.0, min(60.0, float(target_duration_sec))),
+        width=max(180, min(2160, int(width))),
+        height=max(320, min(3840, int(height))),
+        fps=max(1, min(60, int(fps))),
+    )
 
 
 @mcp.tool()
