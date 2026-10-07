@@ -72,7 +72,7 @@ studio/mcp_server.py          -> 외부 에이전트 제어
 | Image | 부분적/참조이미지 중심 | provider 단계로 분리 |
 | Video | LTX + Colab | 기존 코드 재사용 |
 | Audio/TTS | Gemini + 외부 녹음 | 기존 코드 재사용 |
-| AI Clipping | 미구현 | 독립 `clip_detect` 단계 |
+| AI Clipping | 로컬 MVP 구현 | scene/speech 휴리스틱 + 독립 `clip_detect` 단계 |
 | Motion | 프롬프트/Shot 기반 | 기존 프롬프트 + provider |
 | Lip Sync | 미구현 | 독립 `lip_sync` 단계 |
 | Cinema controls | camera_prompt 등 일부 | 렌즈/초점/DOF 메타 확장 예정 |
@@ -104,8 +104,26 @@ studio/mcp_server.py          -> 외부 에이전트 제어
 ## 다음 구현 순서
 
 1. Planner를 Studio UI와 MCP에 노출
-2. 긴 영상 `clip_detect` + 9:16 reframe 구현
-3. local image provider 연결
+2. 긴 영상 `clip_detect` + 9:16 reframe 구현 ✅
+3. 의미 기반 AI clipping provider(선택) + local image provider 연결
 4. lip-sync provider 연결
 5. Cinema 메타(렌즈/초점/DOF) -> 영상 프롬프트 연결
 6. 선택적 MuAPI/Open-Generative-AI 호환 provider 추가
+
+
+## 현재 동작하는 로컬 클리핑
+
+`studio/shortform/clipping.py`는 FFmpeg의 scene-change와 silence 정보를 조합해
+긴 영상에서 후보 구간을 고릅니다. 클라우드 호출은 없습니다.
+
+`studio/shortform/reframe.py`는 선택된 구간을 9:16 center-crop으로 변환하고
+H.264/AAC MP4로 출력합니다.
+
+MCP에서는 다음 도구를 사용할 수 있습니다.
+
+- `get_shortform_features`
+- `analyze_shortform_video`
+- `render_shortform_highlights`
+
+현재 하이라이트 선택은 **의미 이해형 AI가 아니라 로컬 휴리스틱**입니다.
+따라서 "바이럴 포인트의 의미"까지 이해하는 provider는 별도 선택 기능으로 추가합니다.
