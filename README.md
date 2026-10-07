@@ -70,3 +70,20 @@ Colab에서 **런타임 → 런타임 유형 변경 → GPU**를 선택한 뒤 �
 
 이 로컬 방식은 의미 기반 AI 하이라이트 판정의 대체제가 아니라 **무료 fallback**입니다.
 Open-Generative-AI 계열의 의미 기반 클리핑 provider는 선택적으로 붙일 수 있게 분리되어 있습니다.
+
+
+### Studio에서 바로 사용
+
+`python studio/app.py` 실행 후 우측의 **숏폼 공장 — 긴 영상 → 9:16**에서:
+
+1. 원본 영상 선택
+2. 후보 개수 / 숏폼 길이 지정
+3. **후보 분석**으로 타임코드 확인
+4. **9:16 MP4 만들기**로 `media/shorts/<원본이름>/`에 출력
+
+CLI도 동일한 로컬 파이프라인을 사용합니다.
+
+```bash
+PYTHONPATH=studio python studio/shortform_cli.py analyze input.mp4 --count 3 --duration 30
+PYTHONPATH=studio python studio/shortform_cli.py render input.mp4 --output-dir media/shorts --count 3 --duration 30
+```

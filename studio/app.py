@@ -24,6 +24,8 @@ from ltx_runner import available as ltx_available, build_job, finalize_job
 from remote_jobs import RemoteQueue, default_queue_root
 from performance_report import report_text as colab_performance_report
 from quality_review import regeneration_plan
+from shortform.clipping import find_highlights
+from shortform.pipeline import run_local_clipping_pipeline
 
 
 class StudioWindow(QMainWindow):
@@ -303,11 +305,132 @@ class StudioWindow(QMainWindow):
             self.refresh_shot_combo()
             self.load_video_recipe()
 
+        shortform_box = QGroupBox("숏폼 공장 — 긴 영상 → 9:16")
+        shortform_layout = QFormLayout(shortform_box)
+
+        source_row = QHBoxLayout()
+        self.shortform_source = QLineEdit()
+        self.shortform_source.setPlaceholderText("긴 영상 MP4/MOV 파일 선택")
+        source_row.addWidget(self.shortform_source)
+        choose_shortform = QPushButton("영상 선택")
+        choose_shortform.clicked.connect(self.choose_shortform_source)
+        source_row.addWidget(choose_shortform)
+        shortform_layout.addRow("원본 영상", source_row)
+
+        self.shortform_count = QSpinBox()
+        self.shortform_count.setRange(1, 10)
+        self.shortform_count.setValue(3)
+        shortform_layout.addRow("후보 개수", self.shortform_count)
+
+        self.shortform_duration = QDoubleSpinBox()
+        self.shortform_duration.setRange(6.0, 60.0)
+        self.shortform_duration.setValue(30.0)
+        self.shortform_duration.setSingleStep(1.0)
+        self.shortform_duration.setSuffix("초")
+        shortform_layout.addRow("숏폼 길이", self.shortform_duration)
+
+        shortform_buttons = QHBoxLayout()
+        analyze_shortform = QPushButton("후보 분석")
+        analyze_shortform.clicked.connect(self.analyze_shortform_source)
+        shortform_buttons.addWidget(analyze_shortform)
+        render_shortform = QPushButton("9:16 MP4 만들기")
+        render_shortform.clicked.connect(self.render_shortform_source)
+        shortform_buttons.addWidget(render_shortform)
+        shortform_layout.addRow(shortform_buttons)
+
+        self.shortform_result = QTextEdit()
+        self.shortform_result.setReadOnly(True)
+        self.shortform_result.setMaximumHeight(130)
+        self.shortform_result.setPlaceholderText(
+            "유료 API 없이 scene-change + 발화 밀도로 후보를 찾습니다."
+        )
+        shortform_layout.addRow("결과", self.shortform_result)
+
+        right.addWidget(shortform_box)
+
         right.addStretch(1)
         export = QPushButton("현재 프로젝트 MP4 렌더")
         export.clicked.connect(self.export_video)
         right.addWidget(export)
         layout.addLayout(right, 1)
+
+    def choose_shortform_source(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "숏폼 원본 영상 선택",
+            str(self.project_dir),
+            "Video (*.mp4 *.mov *.mkv *.webm *.avi);;All files (*)",
+        )
+        if path:
+            self.shortform_source.setText(path)
+
+    def _shortform_source_path(self) -> Path:
+        value = self.shortform_source.text().strip()
+        if not value:
+            raise ValueError("먼저 원본 영상을 선택하세요.")
+        source = Path(value).expanduser().resolve()
+        if not source.exists() or not source.is_file():
+            raise FileNotFoundError(source)
+        return source
+
+    def analyze_shortform_source(self):
+        try:
+            source = self._shortform_source_path()
+            highlights = find_highlights(
+                source,
+                num_highlights=self.shortform_count.value(),
+                target_duration_sec=self.shortform_duration.value(),
+            )
+        except Exception as e:
+            self.shortform_result.setPlainText(str(e))
+            return QMessageBox.critical(self, "숏폼 분석 실패", str(e))
+
+        lines = [
+            "로컬 분석 완료 — 유료 API 호출 없음",
+            f"원본: {source.name}",
+            "",
+        ]
+        for i, item in enumerate(highlights, 1):
+            lines.append(
+                f"{i}. {item.start:.1f}s ~ {item.end:.1f}s "
+                f"({item.duration:.1f}s) / 점수 {item.score:.2f}"
+            )
+        self.shortform_result.setPlainText("\n".join(lines))
+
+    def render_shortform_source(self):
+        try:
+            source = self._shortform_source_path()
+            output_dir = self.project_dir / "media" / "shorts" / source.stem
+            result = run_local_clipping_pipeline(
+                source,
+                output_dir,
+                num_highlights=self.shortform_count.value(),
+                target_duration_sec=self.shortform_duration.value(),
+                width=1080,
+                height=1920,
+                fps=30,
+            )
+        except Exception as e:
+            self.shortform_result.setPlainText(str(e))
+            return QMessageBox.critical(self, "숏폼 렌더 실패", str(e))
+
+        lines = [
+            f"완료: {result['count']}개",
+            f"저장 폴더: {result['output_dir']}",
+            "",
+        ]
+        for item in result["outputs"]:
+            h = item["highlight"]
+            lines.append(
+                f"{item['index']}. {Path(item['file']).name} "
+                f"({h['start']:.1f}s ~ {h['end']:.1f}s)"
+            )
+        self.shortform_result.setPlainText("\n".join(lines))
+        QMessageBox.information(
+            self,
+            "숏폼 렌더 완료",
+            f"{result['count']}개 생성 완료\n{result['output_dir']}",
+        )
 
     def selected_line(self):
         rows = self.table.selectionModel().selectedRows()
