@@ -50,7 +50,7 @@ def test_auto_provider_prefers_local_when_available():
 
 def test_feature_catalog_does_not_overclaim_missing_features():
     assert FEATURES["video"].status == FeatureStatus.READY
-    assert FEATURES["clipping"].status == FeatureStatus.PLANNED
+    assert FEATURES["clipping"].status == FeatureStatus.PARTIAL
     assert FEATURES["lip_sync"].status == FeatureStatus.PLANNED
 
 
