@@ -21,6 +21,7 @@ from performance_report import report_text as colab_performance_report
 from shortform.clipping import find_highlights
 from shortform.feature_catalog import FEATURES
 from shortform.pipeline import run_local_clipping_pipeline
+from shortform.quality_pipeline import analyze_quality_shortform, run_quality_shortform_pipeline
 
 
 mcp = MCPServer(
@@ -466,6 +467,60 @@ def render_shortform_highlights(
         width=max(180, min(2160, int(width))),
         height=max(320, min(3840, int(height))),
         fps=max(1, min(60, int(fps))),
+    )
+
+
+@mcp.tool()
+def analyze_quality_shortform_video(
+    source_video: str,
+    num_highlights: int = 3,
+    target_duration_sec: float = 30.0,
+    whisper_model: str = "medium",
+    use_whisper: bool = True,
+) -> dict:
+    """Analyze a project-local video for quality-first shorts.
+
+    When use_whisper is true, transcript-aware scoring is required. This keeps a
+    request for high quality from silently degrading to heuristic-only clipping.
+    """
+    path, _, _ = _load()
+    source = _resolve_project_media(path, source_video)
+    return analyze_quality_shortform(
+        source,
+        num_highlights=max(1, min(20, int(num_highlights))),
+        target_duration_sec=max(6.0, min(60.0, float(target_duration_sec))),
+        use_whisper=bool(use_whisper),
+        whisper_model=whisper_model,
+        language="ko",
+        strict_transcript=bool(use_whisper),
+    )
+
+
+@mcp.tool()
+def render_quality_shortform_highlights(
+    source_video: str,
+    num_highlights: int = 3,
+    target_duration_sec: float = 30.0,
+    quality: str = "high",
+    whisper_model: str = "medium",
+    use_whisper: bool = True,
+) -> dict:
+    """Render quality-first 9:16 shorts with captions, safe framing and output validation."""
+    path, _, _ = _load()
+    source = _resolve_project_media(path, source_video)
+    if quality not in {"preview", "high", "cinematic"}:
+        raise ValueError("quality는 preview/high/cinematic 중 하나여야 합니다.")
+    output_dir = path.parent / "media" / "shorts-quality" / source.stem
+    return run_quality_shortform_pipeline(
+        source,
+        output_dir,
+        num_highlights=max(1, min(20, int(num_highlights))),
+        target_duration_sec=max(6.0, min(60.0, float(target_duration_sec))),
+        quality=quality,
+        use_whisper=bool(use_whisper),
+        whisper_model=whisper_model,
+        language="ko",
+        strict_transcript=bool(use_whisper),
     )
 
 
