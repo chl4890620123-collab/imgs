@@ -84,6 +84,8 @@ def analyze_quality_shortform(
                 "detected_ratio": layout.detected_ratio,
                 "mean_face_x": layout.mean_face_x,
                 "face_x_spread": layout.face_x_spread,
+                "source_aspect": layout.source_aspect,
+                "track": [point.to_dict() for point in layout.track],
             },
         })
 
@@ -177,6 +179,7 @@ def run_quality_shortform_pipeline(
             layout=row["layout"]["mode"],
             quality=quality,
             subtitles_ass=ass,
+            face_track=row["layout"].get("track") or None,
         )
         inspection = validate_vertical_output(
             dest,
