@@ -1,0 +1,4 @@
+# Optional high-quality shortform extras.
+# Base Studio still runs without these packages.
+faster-whisper>=1.2
+opencv-python-headless>=4.10
