@@ -87,3 +87,44 @@ CLI도 동일한 로컬 파이프라인을 사용합니다.
 PYTHONPATH=studio python studio/shortform_cli.py analyze input.mp4 --count 3 --duration 30
 PYTHONPATH=studio python studio/shortform_cli.py render input.mp4 --output-dir media/shorts --count 3 --duration 30
 ```
+
+
+## 숏폼 고품질 모드
+
+기본 클리핑보다 결과 품질을 우선할 때는 optional quality stack을 설치합니다.
+
+```bash
+python -m pip install -r studio/requirements-quality.txt
+```
+
+고품질 모드는 다음 순서로 동작합니다.
+
+1. **faster-whisper**로 한국어 transcript + word timing 생성
+2. 질문/반전/이유/숫자/핵심 문장과 문장 완결성을 이용해 후보 점수화
+3. OpenCV가 있으면 얼굴 위치를 샘플링해 안전한 레이아웃 선택
+4. 얼굴이 중앙에서 안정적이면 9:16 crop, 아니면 피사체를 보존하는 blur-fill
+5. word timing 기반 ASS 자막 생성
+6. 고화질 H.264 렌더 + loudness normalization
+7. ffprobe로 해상도/길이/파일 유효성 검증
+8. 각 결과와 분석 근거를 `shortform_manifest.json`에 저장
+
+Studio에서는 **숏폼 공장 — 긴 영상 → 9:16**에서
+`고화질` 또는 `최고화질`을 선택하고 **Whisper 자막 + 의미 기반 후보 분석**을 켠 뒤 실행합니다.
+
+CLI:
+
+```bash
+PYTHONPATH=studio python studio/shortform_cli.py analyze-quality input.mp4 \
+  --count 3 --duration 30 --whisper-model medium --strict-transcript
+
+PYTHONPATH=studio python studio/shortform_cli.py render-quality input.mp4 \
+  --output-dir media/shorts-quality \
+  --count 3 --duration 30 --quality high \
+  --whisper-model medium --strict-transcript
+```
+
+`cinematic`은 CRF와 인코더 프리셋을 더 보수적으로 사용해 파일 크기와 렌더 시간을 늘리는 대신 화질 손실을 더 줄입니다.
+
+> 자동 프레이밍은 얼굴 검출 신뢰도에 따라 **crop / dynamic face-follow / blur-fill** 중 하나를 선택합니다.
+> face-follow는 검출 비율이 충분할 때만 켜지고, 불안정하면 피사체 절단을 피하기 위해 blur-fill로 자동 후퇴합니다.
+> 실제 원본 영상에서는 인물 수·카메라 움직임에 따라 추적 결과를 한 번 더 검수하는 것을 권장합니다.

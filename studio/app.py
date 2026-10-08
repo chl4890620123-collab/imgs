@@ -24,8 +24,9 @@ from ltx_runner import available as ltx_available, build_job, finalize_job
 from remote_jobs import RemoteQueue, default_queue_root
 from performance_report import report_text as colab_performance_report
 from quality_review import regeneration_plan
-from shortform.clipping import find_highlights
-from shortform.pipeline import run_local_clipping_pipeline
+from shortform.quality import QUALITY_PRESETS
+from shortform.quality_pipeline import analyze_quality_shortform, run_quality_shortform_pipeline
+from shortform.transcription import faster_whisper_available
 
 
 class StudioWindow(QMainWindow):
@@ -329,20 +330,42 @@ class StudioWindow(QMainWindow):
         self.shortform_duration.setSuffix("초")
         shortform_layout.addRow("숏폼 길이", self.shortform_duration)
 
+        self.shortform_quality = QComboBox()
+        for key in ("high", "cinematic", "preview"):
+            preset = QUALITY_PRESETS[key]
+            self.shortform_quality.addItem(preset.label, key)
+        shortform_layout.addRow("출력 품질", self.shortform_quality)
+
+        self.shortform_whisper = QCheckBox("Whisper 자막 + 의미 기반 후보 분석")
+        self.shortform_whisper.setChecked(True)
+        shortform_layout.addRow("AI 분석", self.shortform_whisper)
+
+        self.shortform_whisper_model = QComboBox()
+        self.shortform_whisper_model.addItems(["medium", "large-v3", "small"])
+        self.shortform_whisper_model.setCurrentText("medium")
+        shortform_layout.addRow("Whisper 모델", self.shortform_whisper_model)
+
+        whisper_ok, whisper_detail = faster_whisper_available()
+        self.shortform_dependency = QLabel(
+            "Whisper 준비됨" if whisper_ok else "고품질 추가 설치 필요"
+        )
+        self.shortform_dependency.setToolTip(whisper_detail)
+        shortform_layout.addRow("고품질 자막", self.shortform_dependency)
+
         shortform_buttons = QHBoxLayout()
-        analyze_shortform = QPushButton("후보 분석")
+        analyze_shortform = QPushButton("고품질 후보 분석")
         analyze_shortform.clicked.connect(self.analyze_shortform_source)
         shortform_buttons.addWidget(analyze_shortform)
-        render_shortform = QPushButton("9:16 MP4 만들기")
+        render_shortform = QPushButton("고품질 9:16 만들기")
         render_shortform.clicked.connect(self.render_shortform_source)
         shortform_buttons.addWidget(render_shortform)
         shortform_layout.addRow(shortform_buttons)
 
         self.shortform_result = QTextEdit()
         self.shortform_result.setReadOnly(True)
-        self.shortform_result.setMaximumHeight(130)
+        self.shortform_result.setMaximumHeight(160)
         self.shortform_result.setPlaceholderText(
-            "유료 API 없이 scene-change + 발화 밀도로 후보를 찾습니다."
+            "Whisper 의미 분석 → 피사체 보존 레이아웃 → 자막 → 음량 정규화 → 품질 검증"
         )
         shortform_layout.addRow("결과", self.shortform_result)
 
@@ -376,59 +399,77 @@ class StudioWindow(QMainWindow):
     def analyze_shortform_source(self):
         try:
             source = self._shortform_source_path()
-            highlights = find_highlights(
+            use_whisper = self.shortform_whisper.isChecked()
+            result = analyze_quality_shortform(
                 source,
                 num_highlights=self.shortform_count.value(),
                 target_duration_sec=self.shortform_duration.value(),
+                use_whisper=use_whisper,
+                whisper_model=self.shortform_whisper_model.currentText(),
+                language="ko",
+                strict_transcript=use_whisper,
             )
         except Exception as e:
             self.shortform_result.setPlainText(str(e))
-            return QMessageBox.critical(self, "숏폼 분석 실패", str(e))
+            return QMessageBox.critical(self, "고품질 숏폼 분석 실패", str(e))
 
         lines = [
-            "로컬 분석 완료 — 유료 API 호출 없음",
+            f"분석 방식: {result['method']}",
             f"원본: {source.name}",
+            f"Whisper: {'사용' if result['transcript_available'] else '미사용'}",
             "",
         ]
-        for i, item in enumerate(highlights, 1):
+        for i, row in enumerate(result["candidates"], 1):
+            item = row["highlight"]
+            text = row.get("text") or ""
+            preview = text[:48] + ("…" if len(text) > 48 else "")
             lines.append(
-                f"{i}. {item.start:.1f}s ~ {item.end:.1f}s "
-                f"({item.duration:.1f}s) / 점수 {item.score:.2f}"
+                f"{i}. {item['start']:.1f}s ~ {item['end']:.1f}s "
+                f"/ 점수 {item['score']:.2f} / {row['layout']['mode']}"
             )
+            if preview:
+                lines.append(f"   {preview}")
         self.shortform_result.setPlainText("\n".join(lines))
 
     def render_shortform_source(self):
         try:
             source = self._shortform_source_path()
-            output_dir = self.project_dir / "media" / "shorts" / source.stem
-            result = run_local_clipping_pipeline(
+            quality = str(self.shortform_quality.currentData() or "high")
+            output_dir = self.project_dir / "media" / "shorts-quality" / source.stem
+            use_whisper = self.shortform_whisper.isChecked()
+            result = run_quality_shortform_pipeline(
                 source,
                 output_dir,
                 num_highlights=self.shortform_count.value(),
                 target_duration_sec=self.shortform_duration.value(),
-                width=1080,
-                height=1920,
-                fps=30,
+                quality=quality,
+                use_whisper=use_whisper,
+                whisper_model=self.shortform_whisper_model.currentText(),
+                language="ko",
+                strict_transcript=use_whisper,
             )
         except Exception as e:
             self.shortform_result.setPlainText(str(e))
-            return QMessageBox.critical(self, "숏폼 렌더 실패", str(e))
+            return QMessageBox.critical(self, "고품질 숏폼 렌더 실패", str(e))
 
         lines = [
-            f"완료: {result['count']}개",
+            f"완료: {result['count']}개 / {result['quality']}",
+            f"분석 방식: {result['method']}",
             f"저장 폴더: {result['output_dir']}",
             "",
         ]
         for item in result["outputs"]:
             h = item["highlight"]
+            inspect = item["inspection"]
             lines.append(
                 f"{item['index']}. {Path(item['file']).name} "
-                f"({h['start']:.1f}s ~ {h['end']:.1f}s)"
+                f"({h['start']:.1f}s ~ {h['end']:.1f}s) "
+                f"{inspect['width']}x{inspect['height']} / {item['layout']['mode']}"
             )
         self.shortform_result.setPlainText("\n".join(lines))
         QMessageBox.information(
             self,
-            "숏폼 렌더 완료",
+            "고품질 숏폼 렌더 완료",
             f"{result['count']}개 생성 완료\n{result['output_dir']}",
         )
 

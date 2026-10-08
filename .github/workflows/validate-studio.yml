@@ -21,6 +21,7 @@ jobs:
       - name: Compile studio and Colab worker
         run: |
           python -m py_compile studio/*.py
+          python -m py_compile studio/shortform/*.py
           python -m py_compile colab/*.py
       - name: Core tests
         env:
@@ -28,6 +29,10 @@ jobs:
         run: |
           python studio/test_core.py
           python studio/test_remote_jobs.py
+          python studio/test_shortform.py
+          python studio/test_shortform_clipping.py
+          python studio/test_shortform_cli.py
+          python studio/test_shortform_quality.py
       - name: Colab worker lifecycle test
         env:
           PYTHONPATH: studio:colab
