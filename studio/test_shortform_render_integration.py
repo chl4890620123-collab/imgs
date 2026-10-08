@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 
 from shortform.clipping import Highlight, find_highlights
+from shortform.quality_gate import validate_vertical_output
 from shortform.reframe import render_vertical_clip
 
 
@@ -50,6 +51,23 @@ def test_real_vertical_render():
             text=True,
         )
         assert result.stdout.strip() == "360x640"
+
+        quality_out = root / "quality_preview.mp4"
+        render_vertical_clip(
+            source,
+            Highlight(0, 4, 1, 1, 1),
+            quality_out,
+            layout="blur",
+            quality="preview",
+        )
+        inspection = validate_vertical_output(
+            quality_out,
+            expected_width=720,
+            expected_height=1280,
+            min_duration=3.5,
+        )
+        assert inspection.has_audio
+        assert inspection.fps >= 29.0
 
 
 if __name__ == "__main__":
