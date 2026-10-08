@@ -45,8 +45,20 @@ FEATURES: dict[str, FeatureDefinition] = {
         "clipping",
         "AI Clipping",
         FeatureStatus.PARTIAL,
-        ("shortform/clipping.py", "shortform/reframe.py", "shortform/pipeline.py"),
-        "로컬 scene/speech 휴리스틱 하이라이트 + 9:16 렌더는 동작. 의미 기반 cloud AI provider는 선택 기능으로 추후 연결",
+        (
+            "shortform/clipping.py",
+            "shortform/semantic.py",
+            "shortform/reframe.py",
+            "shortform/quality_pipeline.py",
+        ),
+        "로컬 휴리스틱 fallback + 선택적 faster-whisper 의미 점수 + 9:16 고품질 렌더 동작. 외부 cloud AI provider는 아직 미연결",
+    ),
+    "captions": FeatureDefinition(
+        "captions",
+        "Auto Captions",
+        FeatureStatus.PARTIAL,
+        ("shortform/transcription.py", "shortform/captions.py"),
+        "faster-whisper가 설치된 환경에서 word timing 기반 ASS 자막 생성/번인 지원",
     ),
     "motion": FeatureDefinition(
         "motion",
