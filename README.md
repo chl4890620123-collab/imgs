@@ -125,5 +125,6 @@ PYTHONPATH=studio python studio/shortform_cli.py render-quality input.mp4 \
 
 `cinematic`은 CRF와 인코더 프리셋을 더 보수적으로 사용해 파일 크기와 렌더 시간을 늘리는 대신 화질 손실을 더 줄입니다.
 
-> 현재 자동 프레이밍은 **얼굴 위치를 분석해 crop/blur-fill 중 안전한 방식을 선택**합니다.
-> 실제 인물을 따라 프레임이 좌우로 움직이는 dynamic face-follow는 원본 영상으로 검증한 뒤 추가하는 것이 안전합니다.
+> 자동 프레이밍은 얼굴 검출 신뢰도에 따라 **crop / dynamic face-follow / blur-fill** 중 하나를 선택합니다.
+> face-follow는 검출 비율이 충분할 때만 켜지고, 불안정하면 피사체 절단을 피하기 위해 blur-fill로 자동 후퇴합니다.
+> 실제 원본 영상에서는 인물 수·카메라 움직임에 따라 추적 결과를 한 번 더 검수하는 것을 권장합니다.
