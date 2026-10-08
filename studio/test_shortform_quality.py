@@ -4,6 +4,7 @@ import tempfile
 from shortform.captions import write_ass_for_clip
 from shortform.clipping import Highlight
 from shortform.quality import get_quality_preset
+from shortform.reframe import face_follow_filter
 from shortform.semantic import choose_transcript_highlights
 from shortform.transcription import Transcript, TranscriptSegment, TranscriptWord
 
@@ -53,6 +54,21 @@ def test_semantic_highlights_prefer_hooked_transcript():
     assert clip.score > 0.45
 
 
+def test_face_follow_filter_interpolates_tracking_points():
+    value = face_follow_filter(
+        [
+            {"at": 0.0, "x": 0.25},
+            {"at": 2.0, "x": 0.50},
+            {"at": 4.0, "x": 0.75},
+        ],
+        width=720,
+        height=1280,
+    )
+    assert "crop=w=720:h=1280" in value
+    assert "lt(t,2.000)" in value
+    assert "iw*(if(" in value
+
+
 def test_ass_writer_uses_word_timing():
     transcript = _transcript()
     clip = Highlight(7.0, 24.0, 0.9, 1.0, 1.0)
@@ -68,5 +84,6 @@ def test_ass_writer_uses_word_timing():
 if __name__ == "__main__":
     test_quality_presets_are_vertical_and_quality_first()
     test_semantic_highlights_prefer_hooked_transcript()
+    test_face_follow_filter_interpolates_tracking_points()
     test_ass_writer_uses_word_timing()
     print("ok")
