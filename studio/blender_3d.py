@@ -255,8 +255,9 @@ def _reset_outdated_frames(folder: Path, blend: Path) -> None:
 def preview(project_file: Path, shot_id: str) -> Path:
     _, root = project_and_shot(project_file, shot_id)
     folder = workspace(root, shot_id)
-    _run_blender("preview", root, folder, timeout_seconds=300)
     target = folder / "preview.png"
+    target.unlink(missing_ok=True)
+    _run_blender("preview", root, folder, timeout_seconds=300)
     if not valid_png(target):
         raise RuntimeError("Blender preview image is invalid")
     return target
@@ -266,11 +267,19 @@ def attach_start_frame(project_file: Path, shot_id: str) -> Path:
     from video_recipe import RecipeStore
     project, root = project_and_shot(project_file, shot_id)
     folder = workspace(root, shot_id)
+    blend = folder / "scene.blend"
+    if not blend.is_file():
+        raise FileNotFoundError("Create a 3D scene first")
+    marker = folder / "frames_blend_revision.txt"
+    valid_revision = (
+        marker.exists()
+        and marker.read_text(encoding="utf-8").strip() == _blend_signature(blend)
+    )
     frame = folder / "frames" / "frame_000001.png"
-    if not valid_png(frame):
+    if not valid_revision or not valid_png(frame):
         frame = folder / "preview.png"
-    if not valid_png(frame):
-        raise FileNotFoundError("Render a preview or first frame before attaching AI reference")
+    if not valid_png(frame) or frame.stat().st_mtime_ns < blend.stat().st_mtime_ns:
+        raise FileNotFoundError("Render a fresh preview after saving the latest Blender edits")
     recipes = RecipeStore(root / "saseok_video_recipes.json")
     recipe = recipes.get(project.shot(shot_id).scene_id)
     recipe.inference.start_frame = _relative_media_path(root, frame)
@@ -306,6 +315,24 @@ def render_chunk(project_file: Path, shot_id: str, max_frames: int = 24) -> dict
     ready = done == total
     video = folder / "render.mp4"
     if ready:
+        if video.is_file():
+            try:
+                probe = subprocess.run(
+                    [shutil.which("ffprobe") or "ffprobe", "-v", "error",
+                     "-show_entries", "format=duration",
+                     "-of", "default=noprint_wrappers=1:nokey=1", str(video)],
+                    check=True, capture_output=True, text=True, timeout=30,
+                )
+                if float(probe.stdout.strip()) >= total / spec["fps"] * 0.9:
+                    shot = project.shot(shot_id)
+                    shot.visual = _relative_media_path(root, video)
+                    shot.generation_status = "ready"
+                    project.save(project_file)
+                    return {"shot_id": shot_id, "rendered_frames": done,
+                            "total_frames": total, "ready": True,
+                            "video": _relative_media_path(root, video)}
+            except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                pass
         ffmpeg = shutil.which("ffmpeg")
         ffprobe = shutil.which("ffprobe")
         if not ffmpeg or not ffprobe:
@@ -320,8 +347,19 @@ def render_chunk(project_file: Path, shot_id: str, max_frames: int = 24) -> dict
                  "-crf", "18", "-movflags", "+faststart", str(temp)],
                 check=True, timeout=3600,
             )
-            from render_integrity import is_valid_video
-            if not is_valid_video(temp, minimum_duration=total / spec["fps"] * 0.9):
+            probe = subprocess.run(
+                [ffprobe, "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height:format=duration",
+                 "-of", "json", str(temp)], capture_output=True, text=True,
+                check=True, timeout=30,
+            )
+            metadata = json.loads(probe.stdout)
+            duration = float(metadata.get("format", {}).get("duration") or 0)
+            video_streams = metadata.get("streams", [])
+            if duration < total / spec["fps"] * 0.9 or not any(
+                int(stream.get("width", 0)) > 0 and int(stream.get("height", 0)) > 0
+                for stream in video_streams
+            ):
                 raise RuntimeError("Final 3D MP4 validation failed")
             os.replace(temp, video)
         finally:
