@@ -148,6 +148,13 @@ def create_scene(recipe, root, blend):
     if selected == "CYCLES":
         scene.render.engine = "CYCLES"
         scene.cycles.samples = int(recipe.get("cycles_samples", 32))
+        # Some Linux Blender distro builds omit OpenImageDenoiser entirely.
+        # Do not fail the full render when that optional component is missing.
+        if hasattr(scene.cycles, "use_preview_denoising"):
+            scene.cycles.use_preview_denoising = False
+        for layer in scene.view_layers:
+            if hasattr(layer, "cycles") and hasattr(layer.cycles, "use_denoising"):
+                layer.cycles.use_denoising = False
     else:
         try:
             scene.render.engine = "BLENDER_EEVEE_NEXT"
