@@ -97,6 +97,10 @@ class BlenderIntegrationTests(unittest.TestCase):
         blend = folder / "scene.blend"
         blend.write_bytes(b"placeholder blend")
         fake_valid_png(folder / "preview.png")
+        # Simulate a user saving .blend AFTER the old preview was generated.
+        import os
+        preview_mtime = (folder / "preview.png").stat().st_mtime_ns
+        os.utime(blend, ns=(preview_mtime + 1_000_000_000, preview_mtime + 1_000_000_000))
         with self.assertRaises(FileNotFoundError):
             attach_start_frame(self.project_file, "S01_SH01")
 
