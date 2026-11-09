@@ -383,12 +383,14 @@ def render_pending_shots():
     tmp_wf_dir = Path("/content/saseok_workflows")
     tmp_wf_dir.mkdir(exist_ok=True)
     new_count = 0
-    total = sum(len(s["shots"]) for s in EPISODE["scenes"])
-    def clip_exists(sid, shid):
-        d = DRIVE_ROOT / "clips" / f"scene_{sid:02d}"
-        return any(d.glob(f"shot_{shid:02d}.*"))
-    done_before = sum(clip_exists(s["id"], i) for s in EPISODE["scenes"] for i in range(1, len(s["shots"]) + 1))
-    print(f"\n=== 8/8 Wan 2.2 render: {done_before}/{total} clips already on Drive ===")
+    completed = {
+        (scene["id"], idx)
+        for scene in EPISODE["scenes"]
+        for idx in range(1, len(scene["shots"]) + 1)
+        if valid_shot(DRIVE_ROOT / "clips", scene["id"], idx)
+    }
+    total = sum(len(scene["shots"]) for scene in EPISODE["scenes"])
+    print(f"\\n=== 8/8 Wan 2.2 render: {len(completed)}/{total} verified Drive clips ===")
     for scene in EPISODE["scenes"]:
         sid = scene["id"]
         if not (SCENE_START <= sid <= SCENE_END):
@@ -396,34 +398,44 @@ def render_pending_shots():
         scene_drive = DRIVE_ROOT / "clips" / f"scene_{sid:02d}"
         scene_drive.mkdir(parents=True, exist_ok=True)
         for shot_idx, shot in enumerate(scene["shots"], 1):
-            if list(scene_drive.glob(f"shot_{shot_idx:02d}.*")):
+            if (sid, shot_idx) in completed:
                 continue
             if new_count >= MAX_SHOTS_PER_RUN:
-                done_now = sum(clip_exists(s["id"], i) for s in EPISODE["scenes"] for i in range(1, len(s["shots"]) + 1))
+                done_now = len(completed)
                 print(f"이번 실행 한도 {MAX_SHOTS_PER_RUN}개 완료. 현재 {done_now}/{total}. 셀을 다시 실행하면 이어서 생성합니다.")
                 return EPISODE, VOICE_MAP, False
             print(f"\nRendering scene {sid:02d} shot {shot_idx:02d}: {shot[1]}")
             wf = make_workflow(template, scene, shot_idx, shot, VISUAL_STYLE, NEGATIVE_PROMPT)
             wf_path = tmp_wf_dir / f"scene_{sid:02d}_shot_{shot_idx:02d}.json"
             wf_path.write_text(json.dumps(wf, ensure_ascii=False), encoding="utf-8")
-            before = time.time()
             comfy_cli = Path(sys.executable).parent / "comfy"
             if not comfy_cli.exists():
-                raise FileNotFoundError(f"comfy-cli 실행 파일을 찾지 못했습니다: {comfy_cli}")
-            result = sh([str(comfy_cli), "run", "--workflow", str(wf_path), "--wait", "--where", "local"],
-                        cwd=COMFY_DIR, check=False, capture=True)
-            if result.returncode != 0:
-                print(result.stdout[-3000:] if result.stdout else "")
-                print(result.stderr[-3000:] if result.stderr else "")
-                raise RuntimeError(f"scene {sid} shot {shot_idx} ComfyUI 렌더 실패")
-            generated = find_generated_video(sid, shot_idx, before)
-            if generated is None:
-                raise FileNotFoundError(f"렌더는 끝났지만 scene {sid} shot {shot_idx} 영상 파일을 찾지 못했습니다.")
-            dest = scene_drive / f"shot_{shot_idx:02d}{generated.suffix.lower()}"
-            shutil.copy2(generated, dest)
-            print("Saved to Drive:", dest)
+                raise FileNotFoundError(f"comfy-cli executable missing: {comfy_cli}")
+            for attempt in range(1, SHOT_RETRIES + 2):
+                before = time.time()
+                result = sh([str(comfy_cli), "run", "--workflow", str(wf_path),
+                             "--wait", "--where", "local"],
+                            cwd=COMFY_DIR, check=False, capture=True)
+                generated = find_generated_video(sid, shot_idx, before) if result.returncode == 0 else None
+                if generated is not None and is_valid_video(generated):
+                    dest = scene_drive / f"shot_{shot_idx:02d}{generated.suffix.lower()}"
+                    persist_validated_clip(generated, dest)
+                    print("Verified and saved to Drive:", dest)
+                    completed.add((sid, shot_idx))
+                    break
+                print(f"scene {sid} shot {shot_idx} attempt {attempt} failed renderer/verification")
+                if result.stdout:
+                    print(result.stdout[-2000:])
+                if result.stderr:
+                    print(result.stderr[-2000:])
+                if attempt > SHOT_RETRIES:
+                    raise RuntimeError(
+                        f"scene {sid} shot {shot_idx} failed after {attempt} attempts; "
+                        "completed clips remain safe on Drive"
+                    )
+                time.sleep(min(20, 2 ** attempt))
             new_count += 1
-    done_now = sum(clip_exists(s["id"], i) for s in EPISODE["scenes"] for i in range(1, len(s["shots"]) + 1))
+    done_now = len(completed)
     all_done = done_now == total
     print(f"Render progress: {done_now}/{total}")
     return EPISODE, VOICE_MAP, all_done
@@ -461,10 +473,10 @@ def concatenate_scene_motion(scene):
     clip_dir = DRIVE_ROOT / "clips" / f"scene_{sid:02d}"
     clips = []
     for i in range(1, len(scene["shots"]) + 1):
-        matches = sorted(clip_dir.glob(f"shot_{i:02d}.*"))
-        if not matches:
-            raise FileNotFoundError(f"Missing scene {sid} shot {i}")
-        clips.append(matches[0])
+        video = valid_shot(DRIVE_ROOT / "clips", sid, i)
+        if video is None:
+            raise FileNotFoundError(f"Missing or corrupt scene {sid} shot {i}")
+        clips.append(video)
     list_file = Path(f"/content/scene_{sid:02d}_clips.txt")
     list_file.write_text("\n".join(f"file '{p.as_posix()}'" for p in clips), encoding="utf-8")
     base = Path(f"/content/scene_{sid:02d}_base.mp4")
@@ -479,7 +491,7 @@ def assemble_final(episode, voice_map):
     for scene in episode["scenes"]:
         sid = scene["id"]
         out_scene = DRIVE_ROOT / "scenes" / f"scene_{sid:02d}.mp4"
-        if out_scene.exists():
+        if is_valid_video(out_scene):
             scene_outputs.append(out_scene)
             continue
         audio = DRIVE_ROOT / "audio" / f"scene_{sid:02d}.wav"
@@ -515,10 +527,32 @@ def assemble_final(episode, voice_map):
     return final
 
 def main():
-    install_environment()
+    # Probe Drive checkpoints BEFORE downloading huge models or starting CUDA.
     ensure_repo()
-    ensure_comfyui()
     mount_drive()
+    episode, _, _, voice_map = load_episode()
+    if not shutil.which("ffprobe"):
+        ensure_cpu_assembly_tools()
+    verified, total = episode_progress(episode, DRIVE_ROOT / "clips")
+    assembly_only = "--assemble-only" in sys.argv or os.environ.get("SASEOK_ASSEMBLE_ONLY") == "1"
+    print(f"Drive checkpoint: {verified}/{total} verified clips")
+    if assembly_only or verified == total:
+        if verified != total:
+            raise RuntimeError(
+                f"CPU assembly requires all clips. Missing or corrupt: {total - verified}/{total}. "
+                "Run GPU generation again."
+            )
+        ensure_cpu_assembly_tools()
+        final = DRIVE_ROOT / "SASEOK_EP01_WAN22_20min.mp4"
+        if is_valid_video(final):
+            print("Already assembled and verified:", final)
+            return
+        assemble_final(episode, voice_map)
+        return
+
+    install_environment()
+    configure_profile()
+    ensure_comfyui()
     ensure_models()
     restore_character_assets()
     proc = start_comfyui()
@@ -527,7 +561,7 @@ def main():
         if all_done:
             assemble_final(episode, voice_map)
         else:
-            print("\n아직 모든 컷이 끝나지 않았습니다. 같은 Colab 실행 셀을 다시 실행하면 Drive의 기존 컷을 건너뛰고 다음 컷부터 이어집니다.")
+            print("\\nBatch finished. Rerun the Colab cell to generate remaining clips.")
     finally:
         proc.terminate()
         try:
