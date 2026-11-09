@@ -23,7 +23,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Compile Python
-        run: python -m py_compile colab/saseok_episode.py colab/saseok_colab_runner.py
+        run: python -m py_compile colab/saseok_episode.py colab/saseok_colab_runner.py colab/render_integrity.py colab/test_render_integrity.py
+      - name: Check restart and clip integrity on CPU
+        run: python -m unittest discover -s colab -p "test_render_integrity.py" -v
       - name: Validate notebook JSON
         run: |
           python - <<'PY'
