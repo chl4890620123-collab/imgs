@@ -46,6 +46,8 @@ class RenderIntegrityTests(unittest.TestCase):
         self.assertIsNone(valid_shot(clips_root, 1, 2))
         persist_validated_clip(self.video, folder / "shot_01.mp4")
         self.assertEqual(episode_progress(episode, clips_root), (1, 2))
+        self.assertFalse(is_valid_video(self.video, minimum_duration=10.0))
+        self.assertTrue(is_valid_video(self.video, minimum_duration=0.5))
         self.assertIsNotNone(valid_shot(clips_root, 1, 1))
         self.assertEqual(list(folder.glob("*.part")), [])
 
