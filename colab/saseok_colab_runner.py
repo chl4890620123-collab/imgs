@@ -491,7 +491,7 @@ def assemble_final(episode, voice_map):
     for scene in episode["scenes"]:
         sid = scene["id"]
         out_scene = DRIVE_ROOT / "scenes" / f"scene_{sid:02d}.mp4"
-        if is_valid_video(out_scene):
+        if is_valid_video(out_scene, minimum_duration=float(scene["duration"]) * 0.95):
             scene_outputs.append(out_scene)
             continue
         audio = DRIVE_ROOT / "audio" / f"scene_{sid:02d}.wav"
@@ -523,6 +523,9 @@ def assemble_final(episode, voice_map):
     final = DRIVE_ROOT / "SASEOK_EP01_WAN22_20min.mp4"
     sh(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(final_list),
         "-c", "copy", "-movflags", "+faststart", str(final)])
+    expected_duration = sum(float(scene["duration"]) for scene in episode["scenes"])
+    if not is_valid_video(final, minimum_duration=expected_duration * 0.95):
+        raise RuntimeError(f"Final episode is invalid or shorter than expected: {final}")
     print("\n완성:", final)
     return final
 
@@ -544,7 +547,8 @@ def main():
             )
         ensure_cpu_assembly_tools()
         final = DRIVE_ROOT / "SASEOK_EP01_WAN22_20min.mp4"
-        if is_valid_video(final):
+        expected_duration = sum(float(scene["duration"]) for scene in episode["scenes"])
+        if is_valid_video(final, minimum_duration=expected_duration * 0.95):
             print("Already assembled and verified:", final)
             return
         assemble_final(episode, voice_map)
