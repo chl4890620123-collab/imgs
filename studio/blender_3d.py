@@ -226,7 +226,7 @@ def valid_png(path: Path) -> bool:
         if not path.is_file() or path.stat().st_size < 50:
             return False
         with path.open("rb") as handle:
-            if handle.read(8) != b"\\x89PNG\\r\\n\\x1a\\n":
+            if handle.read(8) != b"\x89PNG\r\n\x1a\n":
                 return False
             saw_header = saw_image = False
             while True:
