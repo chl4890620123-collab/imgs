@@ -1,5 +1,17 @@
 # SASEOK / Video Maker
 
+## Saseok Studio 3D — 편집 가능한 Blender 3D 영상 제작
+
+**실제 3D 메시/재질/키프레임/카메라 편집**이 가능한 Blender 파일(.blend)을 기존 Saseok Studio 영상 컷에 연결했습니다. 3D 프레임은 24장씩 끊어 저장하고, MP4로 합쳐 대사·자막 타임라인으로 넘길 수 있습니다.
+
+- **Windows 빠른 실행:** `START_SASEOK_STUDIO_3D.bat` (Python 3.11+, Blender, FFmpeg 설치 필요)
+- **macOS/Linux:** `bash start_saseok_studio_3d.sh`
+- **자세한 설치·사용법:** [3D 모델링 안내](docs/BLENDER_3D_WORKSPACE.md)
+- **GitHub Actions:** 자동검증된 시연용 `.blend` · PNG · MP4 아티팩트 다운로드 가능
+
+기존 Wan 2.2 / Colab AI 영상 생성 기능과는 **별도로 동작하는 실제 로컬 3D 렌더 기능**입니다. 3D 캐릭터 메시를 자연어만으로 자동 생성하는 기능은 아닙니다.
+
+
 이 저장소에는 두 가지 영상 제작 방식이 있습니다.
 
 기존 `video_maker.py` + GitHub Actions 방식은 정지 이미지에 줌/패닝과 TTS를 합치는 가벼운 테스트 렌더러입니다.
