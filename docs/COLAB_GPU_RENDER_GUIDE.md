@@ -7,18 +7,20 @@
 1. [Colab 노트북](https://colab.research.google.com/github/chl4890620123-collab/imgs/blob/main/SASEOK_EP01_WAN22_COLAB.ipynb)을 엽니다.
 2. **런타임 → 런타임 유형 변경 → GPU**를 선택합니다.
 3. 노트북 셀을 실행합니다. 새로 생성한 컷은 Google Drive의 `MyDrive/SASEOK_EP01/clips/`에 검증 후 저장됩니다.
-4. Colab이 종료되거나 8컷 한도에 도달하면 같은 셀을 재실행합니다. 완료된 정상 MP4는 재생성하지 않습니다.
+4. Colab이 종료되거나 **기본 2컷 한도**에 도달하면 같은 셀을 재실행합니다. 완료된 정상 MP4는 재생성하지 않습니다.
 5. 모든 120컷이 모이면 자동으로 장면·음성을 합성합니다.
 
-기본값: `SASEOK_PROFILE=auto`, `SASEOK_MAX_SHOTS=8`, `SASEOK_SHOT_RETRIES=2`.
+기본값: `SASEOK_PROFILE=auto`, `SASEOK_MAX_SHOTS=2`, `SASEOK_SHOT_RETRIES=2`, `SASEOK_SHOT_TIMEOUT_MINUTES=45`, `SASEOK_MAX_BATCH_MINUTES=55`.
 
 노트북 실행 셀의 맨 위에서 다음처럼 환경변수를 변경할 수 있습니다.
 
 ```python
 import os
 os.environ["SASEOK_PROFILE"] = "balanced" # auto | preview | balanced | quality
-os.environ["SASEOK_MAX_SHOTS"] = "4"      # 한번 실행할 생성 컷 수
+os.environ["SASEOK_MAX_SHOTS"] = "2"      # 한번 실행할 생성 컷 수
 os.environ["SASEOK_SHOT_RETRIES"] = "2"   # 컷 실패 시 재시도 횟수
+os.environ["SASEOK_SHOT_TIMEOUT_MINUTES"] = "45"  # 한 컷 최대 대기시간
+os.environ["SASEOK_MAX_BATCH_MINUTES"] = "55"    # 한번 실행의 렌더 시간 예산
 ```
 
 | 프로필 | 해상도 | 생성 프레임 | 샘플링 단계 | 용도 |
@@ -45,6 +47,19 @@ python /content/imgs/colab/saseok_colab_runner.py --assemble-only
 ```
 
 파일 검사·음성·FFmpeg 합성만 수행하며, ComfyUI 모델을 다운로드하거나 CUDA를 시작하지 않습니다. 전체 컷이 없으면 부족한 수를 표시하고 중단합니다.
+
+## 한 컷씩 GPU 호출하고 즉시 저장하기
+
+이제 긴 120컷 일괄 처리 대신 **한 번의 GPU 호출로 한 컷 생성 → MP4 검사 → Drive에 저장 → 상태 기록 → 다음 컷 호출**합니다. Colab 노트북 셀 한 번에는 기본 최대 2컷만 요청합니다. 작은 작업이 완성될 때마다 진행 결과가 남으므로 전체 작업이 중단되어도 이전 성공 컷을 다시 만들 필요가 없습니다.
+
+- `MyDrive/SASEOK_EP01/clips/scene_XX/shot_YY.mp4`: 검증된 영상
+- `MyDrive/SASEOK_EP01/render_state/scene_XX_shot_YY.json`: 컷별 `running`, `done`, `failed` 상태, 시도 횟수 및 렌더 시간
+- `MyDrive/SASEOK_EP01/render_state/last_batch.json`: 최근 배치의 진행률, 중지 이유
+- `MyDrive/SASEOK_EP01/saseok_run.log`: 전체 실행 로그. 재실행 시 **덮어쓰지 않고 추가**합니다.
+
+GPU 호출이 45분을 넘으면 해당 호출을 중지하고 실패로 기록합니다. 앞서 저장된 클립에는 영향이 없습니다. 55분 배치 예산을 다 써가면 다음 컷은 시작하지 않습니다. 한 컷이 실제로 더 오래 걸리는 하드웨어라면 시간 제한을 조절해야 합니다. 45/55분은 성공 보장이나 실제 소요시간 예측이 아니라 **안전용 상한값**입니다.
+
+**중요:** ComfyUI 모델을 로드한 뒤 이미지를 생성하는 한 컷 내부 연산을 중간 프레임별로 자동 저장하는 것은 아닙니다. 한 컷이 끝나야 검증된 MP4로 저장합니다. Colab 세션이 꺼져 있으면 알아서 GPU를 다시 켜거나 예약 실행할 수 없으며, 같은 셀을 다시 실행해야 합니다. 자주 세션을 재시작하면 모델 로드 오버헤드로 **전체 처리 시간이 늘 수 있으므로**, 안정성과 속도는 실제 GPU 실행 로그를 보고 조절하는 것이 좋습니다.
 
 ## 개선된 복구와 한계
 

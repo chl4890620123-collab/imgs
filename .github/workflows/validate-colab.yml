@@ -23,9 +23,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Compile Python
-        run: python -m py_compile colab/saseok_episode.py colab/saseok_colab_runner.py colab/render_integrity.py colab/test_render_integrity.py
+        run: python -m py_compile colab/saseok_episode.py colab/saseok_colab_runner.py colab/render_integrity.py colab/test_render_integrity.py colab/shot_scheduler.py colab/test_shot_scheduler.py
       - name: Check restart and clip integrity on CPU
         run: python -m unittest discover -s colab -p "test_render_integrity.py" -v
+      - name: Check short GPU burst scheduler on CPU
+        run: python -m unittest discover -s colab -p "test_shot_scheduler.py" -v
       - name: Validate notebook JSON
         run: |
           python - <<'PY'
