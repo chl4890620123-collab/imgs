@@ -12,6 +12,8 @@ import time
 import zipfile
 from pathlib import Path
 
+from render_integrity import episode_progress, is_valid_video, persist_validated_clip, valid_shot
+
 REPO_URL = "https://github.com/chl4890620123-collab/imgs.git"
 REPO_DIR = Path("/content/imgs")
 COMFY_DIR = Path("/content/ComfyUI")
@@ -27,7 +29,9 @@ FPS = int(os.environ.get("SASEOK_FPS", "24"))
 FRAMES = int(os.environ.get("SASEOK_FRAMES", "121"))
 STEPS = int(os.environ.get("SASEOK_STEPS", "20"))
 CFG = float(os.environ.get("SASEOK_CFG", "5"))
-MAX_SHOTS_PER_RUN = int(os.environ.get("SASEOK_MAX_SHOTS", "999"))
+MAX_SHOTS_PER_RUN = int(os.environ.get("SASEOK_MAX_SHOTS", "8"))
+SHOT_RETRIES = max(0, int(os.environ.get("SASEOK_SHOT_RETRIES", "2")))
+PROFILE = os.environ.get("SASEOK_PROFILE", "auto").lower()
 SCENE_START = int(os.environ.get("SASEOK_SCENE_START", "1"))
 SCENE_END = int(os.environ.get("SASEOK_SCENE_END", "15"))
 
@@ -50,8 +54,11 @@ def install_environment():
     if shutil.which("nvidia-smi") is None:
         raise RuntimeError("GPU 런타임이 아닙니다. Colab 메뉴에서 런타임 > 런타임 유형 변경 > GPU를 선택한 뒤 다시 실행하세요.")
     sh(["nvidia-smi"], check=False)
-    sh(["apt-get", "-qq", "update"])
-    sh(["apt-get", "-qq", "install", "-y", "ffmpeg", "git", "python3.12", "python3.12-venv"])
+    missing = [name for name in ("ffmpeg", "ffprobe", "git", "python3.12") if not shutil.which(name)]
+    if missing:
+        print("Installing missing system tools:", ", ".join(missing))
+        sh(["apt-get", "-qq", "update"])
+        sh(["apt-get", "-qq", "install", "-y", "ffmpeg", "git", "python3.12", "python3.12-venv"])
 
     # Colab's notebook kernel can be newer than the packages used by ComfyUI.
     # Recreate the venv when our environment recipe changes, so stale package
@@ -72,12 +79,55 @@ def install_environment():
         os.execve(str(VENV_PY), [str(VENV_PY), __file__], env)
 
     # All Python dependencies below are isolated from the Colab kernel.
-    sh([sys.executable, "-m", "pip", "install", "-q", "--no-cache-dir",
-        "comfy-cli",
-        "huggingface_hub>=1.5,<2.0",
-        "edge-tts",
-        "pydub",
-        "requests"])
+    tool_marker = VENV_DIR / ".saseok_tools_ready_v2"
+    if not tool_marker.exists():
+        sh([sys.executable, "-m", "pip", "install", "-q",
+            "comfy-cli", "huggingface_hub>=1.5,<2.0", "edge-tts", "pydub", "requests"])
+        tool_marker.write_text("ready", encoding="utf-8")
+    else:
+        print("Reusable Colab Python tools already installed in this runtime.")
+
+def configure_profile():
+    """Adaptive T4 speed profile; episode prompts and shot order stay unchanged."""
+    global WIDTH, HEIGHT, FRAMES, STEPS
+    if PROFILE not in ("auto", "balanced", "quality", "preview"):
+        raise ValueError("SASEOK_PROFILE must be auto, balanced, quality, or preview")
+    selected = PROFILE
+    if selected == "auto":
+        try:
+            result = sh(["nvidia-smi", "--query-gpu=memory.total",
+                         "--format=csv,noheader,nounits"], capture=True)
+            memory = float(result.stdout.strip().splitlines()[0])
+            selected = "balanced" if memory <= 16384 else "quality"
+        except (IndexError, ValueError, OSError, subprocess.CalledProcessError):
+            selected = "balanced"
+    profiles = {
+        "quality": (832, 480, 121, 20),
+        "balanced": (640, 352, 81, 14),
+        "preview": (512, 288, 49, 8),
+    }
+    suggested = profiles[selected]
+    WIDTH = int(os.environ.get("SASEOK_WIDTH", suggested[0]))
+    HEIGHT = int(os.environ.get("SASEOK_HEIGHT", suggested[1]))
+    FRAMES = int(os.environ.get("SASEOK_FRAMES", suggested[2]))
+    STEPS = int(os.environ.get("SASEOK_STEPS", suggested[3]))
+    if WIDTH % 16 or HEIGHT % 16 or FRAMES % 4 != 1 or min(STEPS, WIDTH, HEIGHT, FRAMES) <= 0:
+        raise ValueError("Resolution must be divisible by 16; frames must be 4n+1; all values positive")
+    print(f"GPU profile: {selected}, {WIDTH}x{HEIGHT}, {FRAMES} frames, {STEPS} steps; "
+          f"max shots per run: {MAX_SHOTS_PER_RUN}")
+
+
+def ensure_cpu_assembly_tools():
+    """FFmpeg/TTS dependencies without ComfyUI, huge models, or a CUDA GPU."""
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        sh(["apt-get", "-qq", "update"])
+        sh(["apt-get", "-qq", "install", "-y", "ffmpeg"])
+    try:
+        import edge_tts  # noqa: F401
+        from pydub import AudioSegment  # noqa: F401
+    except ImportError:
+        sh([sys.executable, "-m", "pip", "install", "-q", "edge-tts", "pydub"])
+
 
 def mount_drive():
     print("\n=== 2/8 Google Drive mount ===")
@@ -109,32 +159,35 @@ def ensure_comfyui():
         sh(["git", "clone", "--depth", "1", "https://github.com/Comfy-Org/ComfyUI.git", str(COMFY_DIR)])
     else:
         sh(["git", "pull", "--ff-only"], cwd=COMFY_DIR, check=False)
-    sh([sys.executable, "-m", "pip", "install", "-q", "--no-cache-dir",
-        "-r", str(COMFY_DIR / "requirements.txt")])
-
-    # ComfyUI has an unpinned Pillow dependency. On Colab we have seen mixed
-    # Pillow files survive an upgrade, so remove both package metadata and PIL
-    # module directories before installing one known-good wheel.
-    sh([sys.executable, "-m", "pip", "uninstall", "-y", "Pillow"], check=False)
-    site = sh([sys.executable, "-c",
-        "import site; print(site.getsitepackages()[0])"], capture=True).stdout.strip()
-    if site:
-        site_dir = Path(site)
-        for pat in ("PIL", "Pillow-*", "pillow-*"):
-            for p in site_dir.glob(pat):
-                if p.is_dir():
-                    shutil.rmtree(p, ignore_errors=True)
-                else:
-                    p.unlink(missing_ok=True)
-    sh([sys.executable, "-m", "pip", "install", "-q", "--no-cache-dir",
-        "Pillow==12.3.0", "huggingface_hub>=1.5,<2.0"])
-
-    # Validate the actual runtime stack before downloading large models.
-    sh([sys.executable, "-c",
-        "from PIL import Image, ImageDraw, ImageOps; import PIL, huggingface_hub, torch; "
-        "print('Python OK / Pillow', PIL.__version__, '/ huggingface_hub', huggingface_hub.__version__, "
-        "'/ torch', torch.__version__, '/ cuda', torch.cuda.is_available(), "
-        "'/ gpu', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE')"])
+    # Install only if requirements changed in this runtime's isolated venv.
+    import hashlib
+    fingerprint = hashlib.sha256((COMFY_DIR / "requirements.txt").read_bytes()).hexdigest()
+    marker = VENV_DIR / ".saseok_comfy_requirements_sha256"
+    if not (marker.exists() and marker.read_text(encoding="utf-8") == fingerprint):
+        sh([sys.executable, "-m", "pip", "install", "-q",
+            "-r", str(COMFY_DIR / "requirements.txt")])
+        # Repair partially upgraded Pillow installations within the isolated venv.
+        sh([sys.executable, "-m", "pip", "uninstall", "-y", "Pillow"], check=False)
+        site = sh([sys.executable, "-c",
+            "import site; print(site.getsitepackages()[0])"], capture=True).stdout.strip()
+        if site:
+            site_dir = Path(site)
+            for pat in ("PIL", "Pillow-*", "pillow-*"):
+                for p in site_dir.glob(pat):
+                    if p.is_dir():
+                        shutil.rmtree(p, ignore_errors=True)
+                    else:
+                        p.unlink(missing_ok=True)
+        sh([sys.executable, "-m", "pip", "install", "-q",
+            "Pillow==11.3.0", "huggingface_hub>=1.5,<2.0"])
+        sh([sys.executable, "-c",
+            "from PIL import Image, ImageDraw, ImageOps; import PIL, huggingface_hub, torch; "
+            "assert torch.cuda.is_available(), 'CUDA unavailable'; "
+            "print('Python OK / Pillow', PIL.__version__, '/ huggingface_hub', huggingface_hub.__version__, "
+            "'/ torch', torch.__version__, '/ gpu', torch.cuda.get_device_name(0))"])
+        marker.write_text(fingerprint, encoding="utf-8")
+    else:
+        print("ComfyUI Python dependencies already prepared; skipping pip reinstall.")
 
 def ensure_models():
     print("\n=== 5/8 Wan 2.2 5B models (ephemeral Colab disk) ===")
