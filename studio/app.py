@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QProcess, QTimer
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
     QCheckBox, QDoubleSpinBox, QGroupBox, QLineEdit, QMainWindow, QMessageBox,
-    QPushButton, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QTextEdit,
+    QPushButton, QScrollArea, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
@@ -27,6 +27,10 @@ from quality_review import regeneration_plan
 from shortform.quality import QUALITY_PRESETS
 from shortform.quality_pipeline import analyze_quality_shortform, run_quality_shortform_pipeline
 from shortform.transcription import faster_whisper_available
+from blender_3d import (
+    blender_executable, init_workspace, add_model_asset, open_native_scene,
+    attach_start_frame, workspace as blender_workspace,
+)
 
 
 class StudioWindow(QMainWindow):
@@ -302,6 +306,37 @@ class StudioWindow(QMainWindow):
         video_layout.addRow(remote_box)
 
         right.addWidget(video_box)
+        # Keep the beginner UI simple: the full native Blender editor opens on demand.
+        model_box = QGroupBox("3D 모델링 — 실제 Blender 편집")
+        model_box.setCheckable(True)
+        model_box.setChecked(False)
+        model_layout = QVBoxLayout(model_box)
+        self.model_status = QLabel("GLB/FBX/OBJ 모델 불러오기 · 변형/재질/리깅/애니메이션 자유 편집")
+        self.model_status.setWordWrap(True)
+        model_layout.addWidget(self.model_status)
+        model_import_row = QHBoxLayout()
+        for label, method in [
+            ("3D 모델 가져오기", self.import_3d_model),
+            ("선택 컷 3D 씬 만들기", self.create_3d_scene),
+            ("Blender에서 편집", self.open_3d_editor),
+        ]:
+            button = QPushButton(label)
+            button.clicked.connect(method)
+            model_import_row.addWidget(button)
+        model_layout.addLayout(model_import_row)
+        model_render_row = QHBoxLayout()
+        self.model_preview_button = QPushButton("첫 프레임 미리보기")
+        self.model_preview_button.clicked.connect(self.preview_3d_scene)
+        model_render_row.addWidget(self.model_preview_button)
+        self.model_render_button = QPushButton("3D 24프레임씩 렌더")
+        self.model_render_button.clicked.connect(self.render_3d_scene)
+        model_render_row.addWidget(self.model_render_button)
+        ref_button = QPushButton("3D → AI 시작화면")
+        ref_button.clicked.connect(self.use_3d_start_frame)
+        model_render_row.addWidget(ref_button)
+        model_layout.addLayout(model_render_row)
+        right.addWidget(model_box)
+
         if self.video_scene.count():
             self.refresh_shot_combo()
             self.load_video_recipe()
@@ -375,7 +410,135 @@ class StudioWindow(QMainWindow):
         export = QPushButton("현재 프로젝트 MP4 렌더")
         export.clicked.connect(self.export_video)
         right.addWidget(export)
-        layout.addLayout(right, 1)
+        right_panel = QWidget()
+        right_panel.setLayout(right)
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setWidget(right_panel)
+        right_scroll.setMinimumWidth(440)
+        layout.addWidget(right_scroll, 1)
+
+    def import_3d_model(self):
+        shot = self._current_shot()
+        if shot is None:
+            return QMessageBox.information(self, "3D", "컷을 먼저 선택하세요.")
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "3D 모델 선택", str(self.project_dir),
+            "3D model (*.glb *.gltf *.fbx *.obj)",
+        )
+        if not filename:
+            return
+        try:
+            dest = add_model_asset(self.project_path, shot.id, Path(filename))
+            self.model_status.setText(f"3D 모델 추가됨: {dest.name}. 이제 3D 씬을 생성하세요.")
+        except Exception as exc:
+            QMessageBox.critical(self, "3D 모델 가져오기 실패", str(exc))
+
+    def _run_3d_action(self, action, extra=None):
+        shot = self._current_shot()
+        if shot is None:
+            return QMessageBox.information(self, "3D", "컷을 먼저 선택하세요.")
+        if not blender_executable():
+            return QMessageBox.warning(
+                self, "Blender 설치 필요",
+                "Blender 4.5 이상을 설치하거나 SASEOK_BLENDER에 Blender 실행파일 경로를 설정하세요.",
+            )
+        if getattr(self, "_active_3d_process", None) is not None:
+            if self._active_3d_process.state() != QProcess.NotRunning:
+                return QMessageBox.information(self, "3D 렌더", "진행 중인 3D 작업이 끝난 뒤 다시 시도하세요.")
+        self._active_3d_shot = shot.id
+        self._active_3d_action = action
+        proc = QProcess(self)
+        self._active_3d_process = proc
+        proc.setWorkingDirectory(str(self.project_dir))
+        proc.setProcessChannelMode(QProcess.MergedChannels)
+        proc.finished.connect(self._on_3d_finished)
+        proc.errorOccurred.connect(
+            lambda _err: self.model_status.setText("3D 실행 오류: " + proc.errorString())
+        )
+        self.model_render_button.setEnabled(False)
+        self.model_preview_button.setEnabled(False)
+        self.model_status.setText(f"{shot.id} / 3D {action} 처리 중…")
+        cmd = [
+            str(Path(__file__).with_name("blender_3d.py")), action,
+            "--project", str(self.project_path),
+            "--shot", shot.id,
+        ] + list(extra or [])
+        proc.start(sys.executable, cmd)
+
+    def create_3d_scene(self):
+        shot = self._current_shot()
+        if shot is None:
+            return QMessageBox.information(self, "3D", "컷을 먼저 선택하세요.")
+        try:
+            init_workspace(self.project_path, shot.id)
+            folder = blender_workspace(self.project_dir, shot.id)
+            if (folder / "scene.blend").exists():
+                return QMessageBox.information(self, "3D 씬 존재", "기존 .blend 파일을 유지합니다. Blender에서 열어 편집하세요.")
+        except Exception as exc:
+            return QMessageBox.critical(self, "3D 초기화 실패", str(exc))
+        self._run_3d_action("build")
+
+    def open_3d_editor(self):
+        shot = self._current_shot()
+        if shot is None:
+            return QMessageBox.information(self, "3D", "컷을 먼저 선택하세요.")
+        try:
+            path = open_native_scene(self.project_path, shot.id)
+            self.model_status.setText(f"Blender 실행: {path.name}. 편집 후 Ctrl+S로 저장하세요.")
+        except Exception as exc:
+            QMessageBox.warning(self, "3D 편집 불가", str(exc))
+
+    def preview_3d_scene(self):
+        self._run_3d_action("preview")
+
+    def render_3d_scene(self):
+        self._run_3d_action("render", ["--chunk", "24"])
+
+    def use_3d_start_frame(self):
+        shot = self._current_shot()
+        if shot is None:
+            return QMessageBox.information(self, "3D", "컷을 먼저 선택하세요.")
+        try:
+            path = attach_start_frame(self.project_path, shot.id)
+            self.recipe_store.load()
+            self.load_video_recipe()
+            self.model_status.setText(f"AI 시작 이미지 설정됨: {path.name}")
+        except Exception as exc:
+            QMessageBox.warning(self, "AI 참조 설정 실패", str(exc))
+
+    def _on_3d_finished(self, exit_code, _exit_status):
+        proc = self._active_3d_process
+        self.model_render_button.setEnabled(True)
+        self.model_preview_button.setEnabled(True)
+        output = bytes(proc.readAllStandardOutput()).decode("utf-8", errors="replace")
+        shot_id = self._active_3d_shot
+        action = self._active_3d_action
+        if exit_code != 0:
+            self.model_status.setText(f"3D {action} 실패. 진행 기록 확인 필요.")
+            return QMessageBox.critical(self, "3D 실행 실패", output[-3500:] or "Blender 실행 실패")
+        try:
+            import json
+            result_line = next(
+                line for line in reversed(output.splitlines()) if line.startswith('{"result":')
+            )
+            result = json.loads(result_line)["result"]
+            if action == "render":
+                self.project = StudioProject.load(self.project_path)
+                self.refresh_shot_combo()
+                self.model_status.setText(
+                    f"{shot_id}: {result['rendered_frames']}/{result['total_frames']}프레임. "
+                    + ("완성 MP4를 타임라인에 연결했습니다." if result["ready"]
+                       else "저장 완료. 같은 버튼으로 이어서 렌더할 수 있습니다.")
+                )
+            elif action == "preview":
+                self.model_status.setText(f"{shot_id}: 미리보기 이미지 생성됨. {result}")
+            else:
+                self.model_status.setText(f"{shot_id}: Blender 편집 파일 생성됨. 이제 Blender에서 여세요.")
+        except (StopIteration, ValueError, KeyError, TypeError) as exc:
+            self.model_status.setText(f"3D 작업 완료, 응답 확인 필요: {str(exc)}")
+        finally:
+            self._active_3d_process = None
 
     def choose_shortform_source(self):
         path, _ = QFileDialog.getOpenFileName(
