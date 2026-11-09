@@ -223,7 +223,7 @@ def open_native_scene(project_file: Path, shot_id: str) -> Path:
 def valid_png(path: Path) -> bool:
     """Check the entire PNG chunk stream and CRCs before accepting a frame."""
     try:
-        if not path.is_file() or path.stat().st_size < 100:
+        if not path.is_file() or path.stat().st_size < 50:
             return False
         with path.open("rb") as handle:
             if handle.read(8) != b"\\x89PNG\\r\\n\\x1a\\n":
