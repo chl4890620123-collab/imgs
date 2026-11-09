@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QProcess, QTimer
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
     QCheckBox, QDoubleSpinBox, QGroupBox, QLineEdit, QMainWindow, QMessageBox,
-    QPushButton, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QTextEdit,
+    QPushButton, QScrollArea, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
@@ -410,7 +410,13 @@ class StudioWindow(QMainWindow):
         export = QPushButton("현재 프로젝트 MP4 렌더")
         export.clicked.connect(self.export_video)
         right.addWidget(export)
-        layout.addLayout(right, 1)
+        right_panel = QWidget()
+        right_panel.setLayout(right)
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setWidget(right_panel)
+        right_scroll.setMinimumWidth(440)
+        layout.addWidget(right_scroll, 1)
 
     def import_3d_model(self):
         shot = self._current_shot()
