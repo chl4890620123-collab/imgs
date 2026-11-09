@@ -62,6 +62,15 @@ jobs:
           name: saseok-blender-3d-demo
           path: 3d-smoke-artifacts/
           retention-days: 14
+      - name: Package complete Saseok Studio 3D program
+        run: git archive --format=zip --output=Saseok_Studio_3D_App.zip HEAD
+      - name: Upload complete Saseok Studio 3D app ZIP
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: saseok-studio-3d-app
+          path: Saseok_Studio_3D_App.zip
+          retention-days: 14
       - name: MCP server import smoke test
         run: |
           python -m pip install "mcp>=2,<3"
