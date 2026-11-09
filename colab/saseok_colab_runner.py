@@ -324,6 +324,26 @@ def find_generated_video(scene_id, shot_idx, after_ts):
                 candidates.append(p)
     return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
 
+def existing_valid_clip(directory: Path, shot_idx: int) -> Path | None:
+    """Only finished, decodable video counts toward Drive resume progress."""
+    for path in sorted(directory.glob(f"shot_{shot_idx:02d}.*")):
+        if path.suffix.lower() not in {".mp4", ".webm", ".mov", ".mkv"}:
+            continue
+        try:
+            if path.stat().st_size <= 1024:
+                continue
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
+                check=False, capture_output=True, text=True, timeout=10,
+            )
+            if probe.returncode == 0 and "video" in probe.stdout.split():
+                return path
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
 def render_pending_shots():
     EPISODE, VISUAL_STYLE, NEGATIVE_PROMPT, VOICE_MAP = load_episode()
     template = fetch_workflow()
@@ -333,7 +353,7 @@ def render_pending_shots():
     total = sum(len(s["shots"]) for s in EPISODE["scenes"])
     def clip_exists(sid, shid):
         d = DRIVE_ROOT / "clips" / f"scene_{sid:02d}"
-        return any(d.glob(f"shot_{shid:02d}.*"))
+        return existing_valid_clip(d, shid) is not None
     done_before = sum(clip_exists(s["id"], i) for s in EPISODE["scenes"] for i in range(1, len(s["shots"]) + 1))
     print(f"\n=== 8/8 Wan 2.2 render: {done_before}/{total} clips already on Drive ===")
     for scene in EPISODE["scenes"]:
@@ -343,7 +363,7 @@ def render_pending_shots():
         scene_drive = DRIVE_ROOT / "clips" / f"scene_{sid:02d}"
         scene_drive.mkdir(parents=True, exist_ok=True)
         for shot_idx, shot in enumerate(scene["shots"], 1):
-            if list(scene_drive.glob(f"shot_{shot_idx:02d}.*")):
+            if existing_valid_clip(scene_drive, shot_idx) is not None:
                 continue
             if new_count >= MAX_SHOTS_PER_RUN:
                 done_now = sum(clip_exists(s["id"], i) for s in EPISODE["scenes"] for i in range(1, len(s["shots"]) + 1))
@@ -366,6 +386,8 @@ def render_pending_shots():
             generated = find_generated_video(sid, shot_idx, before)
             if generated is None:
                 raise FileNotFoundError(f"렌더는 끝났지만 scene {sid} shot {shot_idx} 영상 파일을 찾지 못했습니다.")
+            if generated.stat().st_size <= 1024:
+                raise RuntimeError(f"scene {sid} shot {shot_idx} 렌더 결과가 비어 있거나 손상되었습니다.")
             dest = scene_drive / f"shot_{shot_idx:02d}{generated.suffix.lower()}"
             shutil.copy2(generated, dest)
             print("Saved to Drive:", dest)
@@ -408,10 +430,10 @@ def concatenate_scene_motion(scene):
     clip_dir = DRIVE_ROOT / "clips" / f"scene_{sid:02d}"
     clips = []
     for i in range(1, len(scene["shots"]) + 1):
-        matches = sorted(clip_dir.glob(f"shot_{i:02d}.*"))
-        if not matches:
-            raise FileNotFoundError(f"Missing scene {sid} shot {i}")
-        clips.append(matches[0])
+        clip = existing_valid_clip(clip_dir, i)
+        if clip is None:
+            raise FileNotFoundError(f"Missing or invalid scene {sid} shot {i}")
+        clips.append(clip)
     list_file = Path(f"/content/scene_{sid:02d}_clips.txt")
     list_file.write_text("\n".join(f"file '{p.as_posix()}'" for p in clips), encoding="utf-8")
     base = Path(f"/content/scene_{sid:02d}_base.mp4")
