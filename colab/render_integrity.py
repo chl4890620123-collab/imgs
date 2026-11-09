@@ -14,7 +14,7 @@ from pathlib import Path
 VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov", ".mkv")
 
 
-def is_valid_video(path: str | Path, *, minimum_bytes: int = 8192) -> bool:
+def is_valid_video(path: str | Path, *, minimum_bytes: int = 8192, minimum_duration: float = 0.2) -> bool:
     """Require a readable non-empty video stream before treating a file as done."""
     path = Path(path)
     try:
@@ -34,7 +34,7 @@ def is_valid_video(path: str | Path, *, minimum_bytes: int = 8192) -> bool:
         payload = json.loads(result.stdout)
         duration = float(payload.get("format", {}).get("duration") or 0)
         streams = payload.get("streams", [])
-        return duration >= 0.2 and any(
+        return duration >= minimum_duration and any(
             s.get("codec_type") == "video"
             and int(s.get("width") or 0) > 0
             and int(s.get("height") or 0) > 0
