@@ -14,6 +14,8 @@ import re
 import shutil
 import subprocess
 import sys
+import struct
+import zlib
 from pathlib import Path
 
 from project import StudioProject
@@ -219,16 +221,41 @@ def open_native_scene(project_file: Path, shot_id: str) -> Path:
 
 
 def valid_png(path: Path) -> bool:
-    """Reject empty or truncated PNG checkpoint frames without extra packages."""
+    """Check the entire PNG chunk stream and CRCs before accepting a frame."""
     try:
-        if path.stat().st_size < 500:
+        if not path.is_file() or path.stat().st_size < 100:
             return False
         with path.open("rb") as handle:
-            if handle.read(8) != b"\x89PNG\r\n\x1a\n":
+            if handle.read(8) != b"\\x89PNG\\r\\n\\x1a\\n":
                 return False
-            handle.seek(-12, os.SEEK_END)
-            return handle.read(12)[4:8] == b"IEND"
-    except (OSError, ValueError):
+            saw_header = saw_image = False
+            while True:
+                raw_length = handle.read(4)
+                if len(raw_length) != 4:
+                    return False
+                length = struct.unpack(">I", raw_length)[0]
+                if length > 150 * 1024 * 1024:
+                    return False
+                kind = handle.read(4)
+                data = handle.read(length)
+                checksum = handle.read(4)
+                if len(kind) != 4 or len(data) != length or len(checksum) != 4:
+                    return False
+                actual = zlib.crc32(kind + data) & 0xFFFFFFFF
+                if actual != struct.unpack(">I", checksum)[0]:
+                    return False
+                if kind == b"IHDR":
+                    if saw_header or length != 13:
+                        return False
+                    width, height = struct.unpack(">II", data[:8])
+                    if not width or not height:
+                        return False
+                    saw_header = True
+                elif kind == b"IDAT":
+                    saw_image = True
+                elif kind == b"IEND":
+                    return saw_header and saw_image and length == 0 and handle.read(1) == b""
+    except (OSError, ValueError, struct.error):
         return False
 
 
