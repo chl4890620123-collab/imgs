@@ -12,6 +12,7 @@ import argparse
 import json
 import math
 import os
+import sys
 from pathlib import Path
 
 import bpy
@@ -227,7 +228,8 @@ def main():
     parser.add_argument("--preview", type=Path, required=True)
     parser.add_argument("--start", type=int, default=1)
     parser.add_argument("--end", type=int, default=1)
-    args = parser.parse_args()
+    blender_args = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else sys.argv[1:]
+    args = parser.parse_args(blender_args)
 
     root = args.project_root.resolve()
     spec = json.loads(args.recipe.read_text(encoding="utf-8"))
