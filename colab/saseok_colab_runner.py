@@ -13,6 +13,7 @@ import zipfile
 from pathlib import Path
 
 from render_integrity import episode_progress, is_valid_video, persist_validated_clip, valid_shot
+from shot_scheduler import can_start_another_clip, run_render_command, write_checkpoint
 
 REPO_URL = "https://github.com/chl4890620123-collab/imgs.git"
 REPO_DIR = Path("/content/imgs")
@@ -29,8 +30,10 @@ FPS = int(os.environ.get("SASEOK_FPS", "24"))
 FRAMES = int(os.environ.get("SASEOK_FRAMES", "121"))
 STEPS = int(os.environ.get("SASEOK_STEPS", "20"))
 CFG = float(os.environ.get("SASEOK_CFG", "5"))
-MAX_SHOTS_PER_RUN = int(os.environ.get("SASEOK_MAX_SHOTS", "8"))
+MAX_SHOTS_PER_RUN = max(1, int(os.environ.get("SASEOK_MAX_SHOTS", "2")))
 SHOT_RETRIES = max(0, int(os.environ.get("SASEOK_SHOT_RETRIES", "2")))
+MAX_SHOT_SECONDS = max(60, float(os.environ.get("SASEOK_SHOT_TIMEOUT_MINUTES", "45")) * 60)
+MAX_BATCH_SECONDS = max(0, float(os.environ.get("SASEOK_MAX_BATCH_MINUTES", "55")) * 60)
 PROFILE = os.environ.get("SASEOK_PROFILE", "auto").lower()
 SCENE_START = int(os.environ.get("SASEOK_SCENE_START", "1"))
 SCENE_END = int(os.environ.get("SASEOK_SCENE_END", "15"))
@@ -378,11 +381,13 @@ def find_generated_video(scene_id, shot_idx, after_ts):
     return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
 
 def render_pending_shots():
+    """Call GPU one clip at a time; save/verify before requesting another."""
     EPISODE, VISUAL_STYLE, NEGATIVE_PROMPT, VOICE_MAP = load_episode()
     template = fetch_workflow()
     tmp_wf_dir = Path("/content/saseok_workflows")
     tmp_wf_dir.mkdir(exist_ok=True)
-    new_count = 0
+    state_dir = DRIVE_ROOT / "render_state"
+    state_dir.mkdir(parents=True, exist_ok=True)
     completed = {
         (scene["id"], idx)
         for scene in EPISODE["scenes"]
@@ -390,7 +395,21 @@ def render_pending_shots():
         if valid_shot(DRIVE_ROOT / "clips", scene["id"], idx)
     }
     total = sum(len(scene["shots"]) for scene in EPISODE["scenes"])
-    print(f"\\n=== 8/8 Wan 2.2 render: {len(completed)}/{total} verified Drive clips ===")
+    new_count = 0
+    batch_started = time.monotonic()
+    durations = []
+
+    def batch_state(status, **details):
+        return write_checkpoint(
+            state_dir / "last_batch.json", status,
+            verified_clips=len(completed), total_clips=total,
+            completed_this_batch=new_count,
+            elapsed_seconds=round(time.monotonic() - batch_started, 2),
+            **details,
+        )
+
+    print(f"\\n=== Wan 2.2 short GPU bursts: {len(completed)}/{total} verified clips ===")
+    batch_state("running", planned_shots=MAX_SHOTS_PER_RUN)
     for scene in EPISODE["scenes"]:
         sid = scene["id"]
         if not (SCENE_START <= sid <= SCENE_END):
@@ -400,44 +419,109 @@ def render_pending_shots():
         for shot_idx, shot in enumerate(scene["shots"], 1):
             if (sid, shot_idx) in completed:
                 continue
-            if new_count >= MAX_SHOTS_PER_RUN:
-                done_now = len(completed)
-                print(f"이번 실행 한도 {MAX_SHOTS_PER_RUN}개 완료. 현재 {done_now}/{total}. 셀을 다시 실행하면 이어서 생성합니다.")
+
+            elapsed = time.monotonic() - batch_started
+            average = sum(durations) / len(durations) if durations else None
+            if not can_start_another_clip(
+                new_count, MAX_SHOTS_PER_RUN, elapsed, MAX_BATCH_SECONDS, average
+            ):
+                batch_state("paused", reason="short_batch_limit_reached")
+                print(
+                    f"Short GPU batch paused safely: {len(completed)}/{total} complete. "
+                    "Run the same Colab cell again to continue."
+                )
                 return EPISODE, VOICE_MAP, False
-            print(f"\nRendering scene {sid:02d} shot {shot_idx:02d}: {shot[1]}")
+
+            checkpoint = state_dir / f"scene_{sid:02d}_shot_{shot_idx:02d}.json"
+            print(f"\\nGPU request for scene {sid:02d}, shot {shot_idx:02d}: {shot[1]}")
             wf = make_workflow(template, scene, shot_idx, shot, VISUAL_STYLE, NEGATIVE_PROMPT)
             wf_path = tmp_wf_dir / f"scene_{sid:02d}_shot_{shot_idx:02d}.json"
             wf_path.write_text(json.dumps(wf, ensure_ascii=False), encoding="utf-8")
             comfy_cli = Path(sys.executable).parent / "comfy"
             if not comfy_cli.exists():
                 raise FileNotFoundError(f"comfy-cli executable missing: {comfy_cli}")
+
             for attempt in range(1, SHOT_RETRIES + 2):
+                remaining = (
+                    MAX_BATCH_SECONDS - (time.monotonic() - batch_started)
+                    if MAX_BATCH_SECONDS > 0 else MAX_SHOT_SECONDS
+                )
+                # Never start a fresh attempt just to lose the result at session end.
+                if remaining < 120:
+                    batch_state("paused", reason="insufficient_batch_time")
+                    print("Remaining batch time is too short; existing verified clips are saved.")
+                    return EPISODE, VOICE_MAP, False
+
+                timeout = min(MAX_SHOT_SECONDS, remaining)
+                write_checkpoint(
+                    checkpoint, "running", scene_id=sid, shot_idx=shot_idx,
+                    attempt=attempt, timeout_seconds=round(timeout, 1),
+                )
                 before = time.time()
-                result = sh([str(comfy_cli), "run", "--workflow", str(wf_path),
-                             "--wait", "--where", "local"],
-                            cwd=COMFY_DIR, check=False, capture=True)
-                generated = find_generated_video(sid, shot_idx, before) if result.returncode == 0 else None
+                try:
+                    result = run_render_command(
+                        [str(comfy_cli), "run", "--workflow", str(wf_path),
+                         "--wait", "--where", "local"],
+                        cwd=COMFY_DIR, timeout_seconds=timeout,
+                    )
+                except Exception as exc:
+                    write_checkpoint(
+                        checkpoint, "failed", scene_id=sid, shot_idx=shot_idx,
+                        attempt=attempt, error=str(exc)[-1000:],
+                    )
+                    batch_state("failed", reason="render_command_error")
+                    raise
+
+                generated = (
+                    find_generated_video(sid, shot_idx, before)
+                    if result.returncode == 0 else None
+                )
                 if generated is not None and is_valid_video(generated):
                     dest = scene_drive / f"shot_{shot_idx:02d}{generated.suffix.lower()}"
                     persist_validated_clip(generated, dest)
-                    print("Verified and saved to Drive:", dest)
                     completed.add((sid, shot_idx))
+                    new_count += 1
+                    durations.append(result.elapsed_seconds)
+                    write_checkpoint(
+                        checkpoint, "done", scene_id=sid, shot_idx=shot_idx,
+                        attempt=attempt,
+                        saved_clip=str(dest.relative_to(DRIVE_ROOT)),
+                        clip_bytes=dest.stat().st_size,
+                        render_seconds=round(result.elapsed_seconds, 2),
+                    )
+                    batch_state("running", last_completed=f"scene_{sid:02d}/shot_{shot_idx:02d}")
+                    print(f"GPU clip verified + saved: {dest} ({len(completed)}/{total})")
                     break
-                print(f"scene {sid} shot {shot_idx} attempt {attempt} failed renderer/verification")
-                if result.stdout:
-                    print(result.stdout[-2000:])
-                if result.stderr:
-                    print(result.stderr[-2000:])
-                if attempt > SHOT_RETRIES:
+
+                failure = (
+                    "render_timeout" if result.timed_out
+                    else f"render_error_{result.returncode}_or_invalid_video"
+                )
+                write_checkpoint(
+                    checkpoint, "failed", scene_id=sid, shot_idx=shot_idx,
+                    attempt=attempt, error=failure,
+                    render_seconds=round(result.elapsed_seconds, 2),
+                    output_tail=result.output_tail[-2000:],
+                )
+                print(f"Shot {sid:02d}/{shot_idx:02d}, attempt {attempt} failed: {failure}")
+                if result.output_tail:
+                    print(result.output_tail[-1500:])
+                # A timeout or OOM likely affects the entire GPU session. Stop
+                # rather than repeatedly wasting GPU time or filling its queue.
+                fatal = result.timed_out or "out of memory" in result.output_tail.lower()
+                if fatal or attempt > SHOT_RETRIES:
+                    batch_state("failed", reason=failure,
+                                failed_shot=f"scene_{sid:02d}/shot_{shot_idx:02d}")
                     raise RuntimeError(
-                        f"scene {sid} shot {shot_idx} failed after {attempt} attempts; "
-                        "completed clips remain safe on Drive"
+                        f"GPU burst stopped at scene {sid} shot {shot_idx}. "
+                        "Previously verified Drive clips are safe; inspect render_state."
                     )
                 time.sleep(min(20, 2 ** attempt))
-            new_count += 1
-    done_now = len(completed)
-    all_done = done_now == total
-    print(f"Render progress: {done_now}/{total}")
+
+    all_done = len(completed) == total
+    batch_state("done" if all_done else "paused",
+                reason="all_clips_verified" if all_done else "scene_filter_complete")
+    print(f"GPU render progress: {len(completed)}/{total}")
     return EPISODE, VOICE_MAP, all_done
 
 async def _tts_one(text, voice, rate, pitch, out_mp3):
