@@ -47,9 +47,9 @@ def submit_full_episode(project: StudioProject, project_path: str | Path,
                 shot.generation_status = "ready"
                 reused += 1
                 continue
-        latest = queue.latest_job_for_shot(shot.id)
-        if latest and latest.get("status") in {"queued", "running"}:
-            shot.generation_status = "queued" if latest["status"] == "queued" else "generating"
+        active = active_shots.get(shot.id)
+        if active:
+            shot.generation_status = "queued" if active.get("status") == "queued" else "generating"
             running += 1
             continue
         jobs.append(queue.submit_shot(project, shot, recipe, root))
