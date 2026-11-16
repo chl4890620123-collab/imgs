@@ -906,8 +906,8 @@ class StudioWindow(QMainWindow):
                 self,
                 "Colab 백엔드 확인",
                 "현재 Colab 워커는 ltx-2b만 실행할 수 있습니다. "
-                "아래 장면의 추론 엔진을 ltx-2b로 바꾼 뒤 다시 시도하세요.\\n\\n"
-                + "\\n".join(unsupported),
+                "아래 장면의 추론 엔진을 ltx-2b로 바꾼 뒤 다시 시도하세요.\n\n"
+                + "\n".join(unsupported),
             )
 
         preview = []
@@ -919,13 +919,13 @@ class StudioWindow(QMainWindow):
             preview.append(
                 f"{scene.id:02d}. {scene.title}: 예산 {recipe.call_budget}회 → 등록 {count}컷"
             )
-        preview_text = "\\n".join(preview)
+        preview_text = "\n".join(preview)
         answer = QMessageBox.question(
             self,
             "전체 프로젝트 예산 자동 등록",
-            "각 장면의 기존 AI 호출 예산과 우선순위를 그대로 적용합니다.\\n"
-            "전체 쇼트를 무조건 생성하지 않으며, 장면별 예산만큼 우선 컷을 Colab 큐에 등록합니다.\\n\\n"
-            f"{preview_text}\\n\\n총 {total}개 컷을 등록할까요?",
+            "각 장면의 기존 AI 호출 예산과 우선순위를 그대로 적용합니다.\n"
+            "전체 쇼트를 무조건 생성하지 않으며, 장면별 예산만큼 우선 컷을 Colab 큐에 등록합니다.\n\n"
+            f"{preview_text}\n\n총 {total}개 컷을 등록할까요?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -952,7 +952,7 @@ class StudioWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "전체 프로젝트 등록 완료",
-                f"장면별 예산에 따라 {len(submitted)}개 컷을 Colab 큐에 등록했습니다.\\n"
+                f"장면별 예산에 따라 {len(submitted)}개 컷을 Colab 큐에 등록했습니다.\n"
                 "이미 대기/실행 중인 컷은 중복 등록하지 않았습니다. "
                 "완료된 결과는 기존 타임라인 동기화 기능으로 반영됩니다.",
             )
@@ -963,7 +963,7 @@ class StudioWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 "전체 프로젝트 등록 중 오류",
-                f"{len(locals().get('submitted', []))}개 컷 등록 후 오류가 발생했습니다.\\n{exc}",
+                f"{len(locals().get('submitted', []))}개 컷 등록 후 오류가 발생했습니다.\n{exc}",
             )
 
     def submit_bad_shots(self):
