@@ -31,6 +31,10 @@ def submit_full_episode(project: StudioProject, project_path: str | Path,
     jobs = []
     running = 0
     reused = 0
+    active_shots = {
+        item.get("shot_id"): item
+        for item in queue.list_jobs(["queued", "running"])
+    }
     for shot in sorted(project.shots, key=lambda item: (item.start, item.id)):
         recipe = recipes.get(shot.scene_id)
         if recipe is None:
