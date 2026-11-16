@@ -22,6 +22,7 @@ from inference import available_backends
 from performance import performance_plan_text
 from ltx_runner import available as ltx_available, build_job, finalize_job
 from remote_jobs import RemoteQueue, default_queue_root
+from full_episode import submit_full_episode, episode_videos_ready
 from performance_report import report_text as colab_performance_report
 from quality_review import regeneration_plan
 from shortform.quality import QUALITY_PRESETS
@@ -41,6 +42,8 @@ class StudioWindow(QMainWindow):
         self.project = StudioProject.load(project_path)
         self.recipe_store = RecipeStore(self.project_dir / "saseok_video_recipes.json")
         self.remote_queue_path = default_queue_root(self.project_dir)
+        self.full_episode_marker = self.project_dir / '.saseok_full_episode_active'
+        self.full_episode_process = None
         self.setWindowTitle("Saseok Studio — 사석 제작 편집기")
         self.resize(1450, 850)
         self._build_ui()
@@ -280,6 +283,9 @@ class StudioWindow(QMainWindow):
         submit_scene = QPushButton("장면 우선 컷 일괄 등록")
         submit_scene.clicked.connect(self.submit_colab_scene)
         remote_buttons.addWidget(submit_scene)
+        full_episode = QPushButton("전체 120컷 자동 제작 + 최종 렌더")
+        full_episode.clicked.connect(self.submit_full_episode)
+        remote_layout.addRow(full_episode)
         refresh_remote = QPushButton("상태 새로고침")
         refresh_remote.clicked.connect(lambda: self.refresh_remote_queue(silent=False))
         remote_buttons.addWidget(refresh_remote)
@@ -822,6 +828,67 @@ class StudioWindow(QMainWindow):
             self.remote_queue_path_edit.setText(folder)
             self.refresh_remote_queue(silent=True)
 
+    def submit_full_episode(self):
+        answer = QMessageBox.question(
+            self,
+            "전체 120컷 생성 확인",
+            "영상이 없는 컷을 모두 Colab GPU에 등록합니다. 최대 120개 생성 작업이 발생하며 GPU 사용량과 대기 시간이 클 수 있습니다. 계속할까요?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.save_video_recipe()
+        for scene in self.project.scenes:
+            self.recipe_store.get(scene.id)
+        self.recipe_store.save()
+        try:
+            queue = self._remote_queue()
+            result = submit_full_episode(self.project, self.project_path, self.recipe_store, queue)
+        except Exception as exc:
+            return QMessageBox.critical(self, "전체 컷 등록 실패", str(exc))
+        self.full_episode_marker.write_text("active", encoding="utf-8")
+        self.refresh_shot_combo()
+        self.refresh_remote_queue(silent=True)
+        QMessageBox.information(
+            self, "전체 120컷 등록 완료",
+            f"전체 컷: {result.total_shots}\n새 작업 등록: {result.submitted}\n"
+            f"이미 실행 중: {result.already_running}\n기존 영상 재사용: {result.reused_videos}\n\n"
+            "Colab 워커가 실행 중이면 자동 생성·수집됩니다. 120컷이 모두 준비되면 최종 MP4 렌더를 시작합니다.",
+        )
+        if episode_videos_ready(self.project, self.project_dir):
+            self.start_full_episode_render()
+
+    def start_full_episode_render(self):
+        if self.full_episode_process and self.full_episode_process.state() != QProcess.NotRunning:
+            return
+        if not episode_videos_ready(self.project, self.project_dir):
+            return
+        process = QProcess(self)
+        process.setWorkingDirectory(str(Path(__file__).resolve().parents[1]))
+        process.finished.connect(self.on_full_episode_render_finished)
+        process.errorOccurred.connect(lambda _error: QMessageBox.critical(
+            self, "최종 렌더 실행 오류", process.errorString()
+        ))
+        self.full_episode_process = process
+        output = self.project_dir / "SASEOK_EPISODE_01.mp4"
+        script = Path(__file__).resolve().with_name("episode_render.py")
+        process.start(sys.executable, [str(script), str(self.project_path), str(output)])
+
+    def on_full_episode_render_finished(self, exit_code, _exit_status):
+        process = self.full_episode_process
+        self.full_episode_process = None
+        if self.full_episode_marker.exists():
+            self.full_episode_marker.unlink()
+        if exit_code == 0:
+            QMessageBox.information(
+                self, "1화 전체 렌더 완료",
+                f"120컷 최종 영상 생성 완료\n{self.project_dir / 'SASEOK_EPISODE_01.mp4'}",
+            )
+        else:
+            detail = process.readAllStandardError().data().decode("utf-8", errors="replace")[-4000:] if process else ""
+            QMessageBox.critical(self, "1화 최종 렌더 실패", detail or "렌더 프로세스가 실패했습니다.")
+
     def submit_colab_shot(self):
         shot = self._current_shot()
         if shot is None:
@@ -936,6 +1003,13 @@ class StudioWindow(QMainWindow):
             synced = queue.sync_all_done(self.project, self.project_path)
             changed = bool(synced or recovered)
             for shot in self.project.shots:
+                if shot.visual:
+                    visual = Path(shot.visual)
+                    if not visual.is_absolute():
+                        visual = self.project_dir / visual
+                    if visual.is_file() and visual.suffix.lower() in {".mp4", ".mov", ".mkv", ".webm"}:
+                        shot.generation_status = "ready"
+                        continue
                 job = queue.latest_job_for_shot(shot.id)
                 if not job:
                     continue
@@ -954,6 +1028,8 @@ class StudioWindow(QMainWindow):
                 self.project.save(self.project_path)
                 self.refresh_shot_combo()
             self.remote_status_label.setText(queue.worker_summary())
+            if self.full_episode_marker.exists() and episode_videos_ready(self.project, self.project_dir):
+                self.start_full_episode_render()
             if not silent:
                 jobs = queue.list_jobs()
                 active = sum(1 for x in jobs if x.get("status") in {"queued", "running"})
