@@ -829,6 +829,15 @@ class StudioWindow(QMainWindow):
             self.refresh_remote_queue(silent=True)
 
     def submit_full_episode(self):
+        answer = QMessageBox.question(
+            self,
+            "전체 120컷 생성 확인",
+            "영상이 없는 컷을 모두 Colab GPU에 등록합니다. 최대 120개 생성 작업이 발생하며 GPU 사용량과 대기 시간이 클 수 있습니다. 계속할까요?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
         self.save_video_recipe()
         for scene in self.project.scenes:
             self.recipe_store.get(scene.id)
@@ -994,6 +1003,13 @@ class StudioWindow(QMainWindow):
             synced = queue.sync_all_done(self.project, self.project_path)
             changed = bool(synced or recovered)
             for shot in self.project.shots:
+                if shot.visual:
+                    visual = Path(shot.visual)
+                    if not visual.is_absolute():
+                        visual = self.project_dir / visual
+                    if visual.is_file() and visual.suffix.lower() in {".mp4", ".mov", ".mkv", ".webm"}:
+                        shot.generation_status = "ready"
+                        continue
                 job = queue.latest_job_for_shot(shot.id)
                 if not job:
                     continue
