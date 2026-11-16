@@ -19,7 +19,7 @@ from generation_plan import build_plan, plan_text
 from video_recipe import PRESETS, RecipeStore, apply_preset
 from prompt_engine import apply_plan, plan_instruction
 from inference import available_backends
-from performance import performance_plan_text
+from performance import choose_generation_shots, performance_plan_text
 from ltx_runner import available as ltx_available, build_job, finalize_job
 from remote_jobs import RemoteQueue, default_queue_root
 from performance_report import report_text as colab_performance_report
@@ -280,6 +280,9 @@ class StudioWindow(QMainWindow):
         submit_scene = QPushButton("장면 우선 컷 일괄 등록")
         submit_scene.clicked.connect(self.submit_colab_scene)
         remote_buttons.addWidget(submit_scene)
+        submit_project = QPushButton("전체 프로젝트 예산 자동 등록")
+        submit_project.clicked.connect(self.submit_colab_project_budgeted)
+        remote_buttons.addWidget(submit_project)
         refresh_remote = QPushButton("상태 새로고침")
         refresh_remote.clicked.connect(lambda: self.refresh_remote_queue(silent=False))
         remote_buttons.addWidget(refresh_remote)
@@ -885,6 +888,83 @@ class StudioWindow(QMainWindow):
             )
         except Exception as exc:
             QMessageBox.critical(self, "장면 등록 실패", str(exc))
+
+    def submit_colab_project_budgeted(self):
+        """Queue each scene's highest-value shots within that scene's AI call budget."""
+        if not self.project.scenes:
+            return QMessageBox.information(self, "전체 프로젝트 등록", "등록할 장면이 없습니다.")
+
+        self.save_video_recipe()
+        recipes = [(scene, self.recipe_store.get(scene.id)) for scene in self.project.scenes]
+        unsupported = [
+            f"{scene.id:02d}. {scene.title}: {recipe.inference.backend}"
+            for scene, recipe in recipes
+            if recipe.inference.backend != "ltx-2b"
+        ]
+        if unsupported:
+            return QMessageBox.warning(
+                self,
+                "Colab 백엔드 확인",
+                "현재 Colab 워커는 ltx-2b만 실행할 수 있습니다. "
+                "아래 장면의 추론 엔진을 ltx-2b로 바꾼 뒤 다시 시도하세요.\\n\\n"
+                + "\\n".join(unsupported),
+            )
+
+        preview = []
+        total = 0
+        for scene, recipe in recipes:
+            selected = choose_generation_shots(self.project, scene.id, recipe)
+            count = len(selected)
+            total += count
+            preview.append(
+                f"{scene.id:02d}. {scene.title}: 예산 {recipe.call_budget}회 → 등록 {count}컷"
+            )
+        preview_text = "\\n".join(preview)
+        answer = QMessageBox.question(
+            self,
+            "전체 프로젝트 예산 자동 등록",
+            "각 장면의 기존 AI 호출 예산과 우선순위를 그대로 적용합니다.\\n"
+            "전체 쇼트를 무조건 생성하지 않으며, 장면별 예산만큼 우선 컷을 Colab 큐에 등록합니다.\\n\\n"
+            f"{preview_text}\\n\\n총 {total}개 컷을 등록할까요?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        try:
+            queue = self._remote_queue()
+            submitted = []
+            for scene, recipe in recipes:
+                jobs = queue.submit_scene_priority(
+                    self.project,
+                    scene.id,
+                    recipe,
+                    self.project_dir,
+                )
+                submitted.extend(jobs)
+                for job in jobs:
+                    self.project.shot(job["shot_id"]).generation_status = "queued"
+
+            self.project.save(self.project_path)
+            self.refresh_shot_combo()
+            self.refresh_remote_queue(silent=True)
+            QMessageBox.information(
+                self,
+                "전체 프로젝트 등록 완료",
+                f"장면별 예산에 따라 {len(submitted)}개 컷을 Colab 큐에 등록했습니다.\\n"
+                "이미 대기/실행 중인 컷은 중복 등록하지 않았습니다. "
+                "완료된 결과는 기존 타임라인 동기화 기능으로 반영됩니다.",
+            )
+        except Exception as exc:
+            self.project.save(self.project_path)
+            self.refresh_shot_combo()
+            self.refresh_remote_queue(silent=True)
+            QMessageBox.critical(
+                self,
+                "전체 프로젝트 등록 중 오류",
+                f"{len(locals().get('submitted', []))}개 컷 등록 후 오류가 발생했습니다.\\n{exc}",
+            )
 
     def submit_bad_shots(self):
         self.save_video_recipe()
