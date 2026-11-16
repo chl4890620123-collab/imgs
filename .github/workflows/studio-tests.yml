@@ -1,0 +1,25 @@
+name: Saseok Studio tests
+
+on:
+  pull_request:
+    paths:
+      - "studio/**"
+      - ".github/workflows/studio-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "studio/**"
+      - ".github/workflows/studio-tests.yml"
+
+jobs:
+  studio-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run Studio unit tests
+        env:
+          PYTHONPATH: studio
+        run: python -m unittest discover -s studio/tests -p "test_*.py" -v
