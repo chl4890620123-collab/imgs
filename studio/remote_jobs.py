@@ -161,31 +161,6 @@ class RemoteQueue:
             )
         return jobs
 
-    def submit_all_shots(self, project: StudioProject, recipes: dict[int, VideoRecipe],
-                         project_dir: str | Path, max_retries: int = 2) -> list[dict]:
-        """Queue every shot, bypassing the per-scene call budget."""
-        jobs = []
-        for shot in sorted(project.shots, key=lambda item: (item.start, item.id)):
-            recipe = recipes.get(shot.scene_id)
-            if recipe is None:
-                raise ValueError(f"{shot.id}: 장면 {shot.scene_id}의 영상 설정이 없습니다.")
-            if recipe.inference.backend != "ltx-2b":
-                raise ValueError(f"{shot.id}: Colab 전체 컷 생성은 ltx-2b만 지원합니다.")
-            if shot.visual:
-                visual = Path(shot.visual)
-                if not visual.is_absolute():
-                    visual = Path(project_dir) / visual
-                if visual.is_file() and visual.suffix.lower() in {".mp4", ".mov", ".mkv", ".webm"}:
-                    shot.generation_status = "ready"
-                    continue
-            latest = self.latest_job_for_shot(shot.id)
-            if latest and latest.get("status") in {"queued", "running"}:
-                shot.generation_status = "queued" if latest["status"] == "queued" else "generating"
-                continue
-            jobs.append(self.submit_shot(project, shot, recipe, project_dir, max_retries=max_retries))
-            shot.generation_status = "queued"
-        return jobs
-
     def recover_stale_running(
         self,
         timeout_seconds: float = 300.0,
